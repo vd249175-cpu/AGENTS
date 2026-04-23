@@ -2,6 +2,10 @@
 __pycache__/
 *.py[codz]
 *$py.class
+.DS_Store
+
+# Local model credentials
+Deepagents/*/Agent/Models/model_config.json
 
 # C extensions
 *.so
