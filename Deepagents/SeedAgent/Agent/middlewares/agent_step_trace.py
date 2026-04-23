@@ -70,14 +70,11 @@ class AgentStepTraceMiddleware(BaseAgentMiddleware):
     def _write_event(self, payload: dict[str, Any]) -> None:
         try:
             writer = get_stream_writer()
-            identity = self.runtime_identity()
             writer(
                 {
                     "type": self.runingConfig.eventType,
                     "middleware": self.name,
                     "agent_name": self._agent_name(),
-                    "run_id": identity.runId,
-                    "thread_id": identity.threadId,
                     **payload,
                 }
             )
@@ -269,4 +266,3 @@ class AgentStepTraceMiddleware(BaseAgentMiddleware):
             }
         )
         return result
-

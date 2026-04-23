@@ -68,6 +68,8 @@ class AgentEvent(BaseModel):
     result_type: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    model_config = {"extra": "allow"}
+
 
 class AgentErrorReport(BaseModel):
     error_type: str | None = None

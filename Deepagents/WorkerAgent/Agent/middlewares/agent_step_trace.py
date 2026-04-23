@@ -12,37 +12,40 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import Field
 
-from Deepagents.SeedAgent.Agent.middlewares.base import BaseAgentMiddleware, MiddlewareRuningConfig
+from Deepagents.WorkerAgent.Agent.middlewares.base import (
+    BaseAgentMiddleware,
+    MiddlewareRuningConfig,
+)
 
 
 MIDDLEWARE_DIR = Path(__file__).resolve().parent
 
 
 class MiddlewareStateTydict(AgentState, total=False):
-    debugTraceLastPhase: str | None
+    agentStepTraceLastPhase: str | None
 
 
-class DebugTraceRuningConfig(MiddlewareRuningConfig):
-    eventType: str = Field(default="agent_debug_trace")
-    truncateLimit: int = Field(default=220, ge=20)
+class AgentStepTraceRuningConfig(MiddlewareRuningConfig):
+    eventType: str = Field(default="agent_step_timing")
+    emitFullState: bool = Field(default=True)
 
 
-middleware_runingconfig = DebugTraceRuningConfig.load(
-    MIDDLEWARE_DIR / "debug_trace_config.json"
+middleware_runingconfig = AgentStepTraceRuningConfig.load(
+    MIDDLEWARE_DIR / "agent_step_trace_config.json"
 )
 middleware_capability_prompts = []
 MiddlewareToolConfig = {"tools": {}, "toolStateTydicts": {}}
 
 
-class DebugTraceMiddleware(BaseAgentMiddleware):
-    name = "debug_trace"
+class AgentStepTraceMiddleware(BaseAgentMiddleware):
+    name = "agent_step_trace"
     state_schema = MiddlewareStateTydict
     tools = []
 
     def __init__(
         self,
         *,
-        runingConfig: DebugTraceRuningConfig = middleware_runingconfig,
+        runingConfig: AgentStepTraceRuningConfig = middleware_runingconfig,
     ) -> None:
         super().__init__(
             runingConfig=runingConfig,
@@ -54,12 +57,6 @@ class DebugTraceMiddleware(BaseAgentMiddleware):
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def _truncate(self, value: Any) -> str:
-        text = " ".join(str(value).split())
-        if len(text) <= self.runingConfig.truncateLimit:
-            return text
-        return text[: self.runingConfig.truncateLimit] + "..."
-
     def _metadata(self) -> dict[str, Any]:
         try:
             return dict((get_config().get("metadata", {}) or {}))
@@ -70,7 +67,7 @@ class DebugTraceMiddleware(BaseAgentMiddleware):
         metadata = self._metadata()
         return metadata.get("lc_agent_name") or metadata.get("agent_name")
 
-    def _emit(self, payload: dict[str, Any]) -> None:
+    def _write_event(self, payload: dict[str, Any]) -> None:
         try:
             writer = get_stream_writer()
             writer(
@@ -84,71 +81,59 @@ class DebugTraceMiddleware(BaseAgentMiddleware):
         except Exception:
             return
 
-    def _message_summary(self, message: Any) -> dict[str, Any]:
-        role = getattr(message, "type", None)
-        if not isinstance(role, str) or not role:
-            role = message.__class__.__name__.replace("Message", "").lower() or "message"
-        content = getattr(message, "content", "")
-        tool_calls = getattr(message, "tool_calls", None)
-        return {
-            "role": role.lower(),
-            "content_preview": self._truncate(content),
-            "tool_calls": [call.get("name") for call in tool_calls] if isinstance(tool_calls, list) else None,
-        }
-
-    def _state_summary(self, state: Any) -> dict[str, Any]:
+    def _state_payload(self, state: Any) -> Any:
+        if not self.runingConfig.emitFullState:
+            if isinstance(state, dict):
+                return {"keys": sorted(state.keys())}
+            return {"type": type(state).__name__}
         if isinstance(state, dict):
-            summary = {"type": "dict", "keys": sorted(state.keys())}
-            if "messages" in state and isinstance(state["messages"], list):
-                summary["message_count"] = len(state["messages"])
-            return summary
-        return {"type": type(state).__name__, "repr": self._truncate(state)}
+            return state
+        if hasattr(state, "model_dump"):
+            try:
+                return state.model_dump()
+            except Exception:
+                return {"type": type(state).__name__}
+        return state
 
-    def _request_summary(self, request: ModelRequest[Any]) -> dict[str, Any]:
-        messages = list(request.messages)
-        return {
-            "message_count": len(messages),
-            "tool_count": len(request.tools),
-            "has_system_message": request.system_message is not None,
-            "tool_choice": request.tool_choice,
-            "message_tail": [self._message_summary(message) for message in messages[-4:]],
-            "system_message_preview": self._truncate(
-                getattr(request.system_message, "content", "") if request.system_message else ""
-            ),
-        }
-
-    def _tool_call_summary(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _tool_call_summary(tool_call: dict[str, Any]) -> dict[str, Any]:
         args = tool_call.get("args") if isinstance(tool_call, dict) else None
         return {
             "tool_call_id": tool_call.get("id"),
             "tool_name": tool_call.get("name"),
-            "tool_args_preview": self._truncate(args if args is not None else ""),
+            "tool_args_keys": list(args.keys()) if isinstance(args, dict) else None,
         }
 
-    def _result_summary(self, result: Any) -> dict[str, Any]:
-        if isinstance(result, AIMessage):
-            return {
-                "type": "AIMessage",
-                "content_preview": self._truncate(result.content),
-                "tool_calls": [call.get("name") for call in getattr(result, "tool_calls", [])],
-            }
-        if isinstance(result, ToolMessage):
-            return {"type": "ToolMessage", "content_preview": self._truncate(result.content)}
+    @staticmethod
+    def _model_request_summary(request: ModelRequest[Any]) -> dict[str, Any]:
+        return {
+            "message_count": len(request.messages),
+            "tool_count": len(request.tools),
+            "has_system_message": request.system_message is not None,
+            "tool_choice": request.tool_choice,
+        }
+
+    @staticmethod
+    def _result_type(result: Any) -> str:
         if isinstance(result, ExtendedModelResponse):
-            return {"type": "ExtendedModelResponse", "repr": self._truncate(result)}
+            return "ExtendedModelResponse"
         if isinstance(result, ModelResponse):
-            return {"type": "ModelResponse", "repr": self._truncate(result)}
+            return "ModelResponse"
+        if isinstance(result, AIMessage):
+            return "AIMessage"
+        if isinstance(result, ToolMessage):
+            return "ToolMessage"
         if isinstance(result, Command):
-            return {"type": "Command", "repr": self._truncate(result)}
-        return {"type": type(result).__name__, "repr": self._truncate(result)}
+            return "Command"
+        return type(result).__name__
 
     def before_agent(self, state: Any, runtime: Runtime) -> dict[str, Any] | None:
-        self._emit(
+        self._write_event(
             {
                 "phase": "before_agent",
                 "event": "start",
                 "started_at": self._now(),
-                "state": self._state_summary(state),
+                "state": self._state_payload(state),
                 "runtime": {
                     "context_type": type(runtime.context).__name__,
                     "has_store": runtime.store is not None,
@@ -161,12 +146,12 @@ class DebugTraceMiddleware(BaseAgentMiddleware):
         return self.before_agent(state, runtime)
 
     def after_agent(self, state: Any, runtime: Runtime) -> dict[str, Any] | None:
-        self._emit(
+        self._write_event(
             {
                 "phase": "after_agent",
                 "event": "end",
                 "finished_at": self._now(),
-                "state": self._state_summary(state),
+                "state": self._state_payload(state),
                 "runtime": {
                     "context_type": type(runtime.context).__name__,
                     "has_store": runtime.store is not None,
@@ -183,23 +168,23 @@ class DebugTraceMiddleware(BaseAgentMiddleware):
         request: ModelRequest[Any],
         handler: Callable[[ModelRequest[Any]], ModelResponse[ResponseT]],
     ) -> ModelResponse[ResponseT] | AIMessage | ExtendedModelResponse[ResponseT]:
-        self._emit(
+        self._write_event(
             {
                 "phase": "wrap_model_call",
                 "event": "start",
                 "started_at": self._now(),
-                "request": self._request_summary(request),
-                "state": self._state_summary(request.state),
+                "request": self._model_request_summary(request),
+                "state": self._state_payload(request.state),
             }
         )
         result = handler(request)
-        self._emit(
+        self._write_event(
             {
                 "phase": "wrap_model_call",
                 "event": "end",
                 "finished_at": self._now(),
-                "result": self._result_summary(result),
-                "state": self._state_summary(request.state),
+                "result_type": self._result_type(result),
+                "state": self._state_payload(request.state),
             }
         )
         return result
@@ -209,23 +194,23 @@ class DebugTraceMiddleware(BaseAgentMiddleware):
         request: ModelRequest[Any],
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[ResponseT]]],
     ) -> ModelResponse[ResponseT] | AIMessage | ExtendedModelResponse[ResponseT]:
-        self._emit(
+        self._write_event(
             {
                 "phase": "wrap_model_call",
                 "event": "start",
                 "started_at": self._now(),
-                "request": self._request_summary(request),
-                "state": self._state_summary(request.state),
+                "request": self._model_request_summary(request),
+                "state": self._state_payload(request.state),
             }
         )
         result = await handler(request)
-        self._emit(
+        self._write_event(
             {
                 "phase": "wrap_model_call",
                 "event": "end",
                 "finished_at": self._now(),
-                "result": self._result_summary(result),
-                "state": self._state_summary(request.state),
+                "result_type": self._result_type(result),
+                "state": self._state_payload(request.state),
             }
         )
         return result
@@ -235,23 +220,23 @@ class DebugTraceMiddleware(BaseAgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
-        self._emit(
+        self._write_event(
             {
                 "phase": "wrap_tool_call",
                 "event": "start",
                 "started_at": self._now(),
                 "tool_call": self._tool_call_summary(request.tool_call),
-                "state": self._state_summary(request.state),
+                "state": self._state_payload(request.state),
             }
         )
         result = handler(request)
-        self._emit(
+        self._write_event(
             {
                 "phase": "wrap_tool_call",
                 "event": "end",
                 "finished_at": self._now(),
-                "result": self._result_summary(result),
-                "state": self._state_summary(request.state),
+                "result_type": self._result_type(result),
+                "state": self._state_payload(request.state),
             }
         )
         return result
@@ -261,23 +246,23 @@ class DebugTraceMiddleware(BaseAgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
-        self._emit(
+        self._write_event(
             {
                 "phase": "wrap_tool_call",
                 "event": "start",
                 "started_at": self._now(),
                 "tool_call": self._tool_call_summary(request.tool_call),
-                "state": self._state_summary(request.state),
+                "state": self._state_payload(request.state),
             }
         )
         result = await handler(request)
-        self._emit(
+        self._write_event(
             {
                 "phase": "wrap_tool_call",
                 "event": "end",
                 "finished_at": self._now(),
-                "result": self._result_summary(result),
-                "state": self._state_summary(request.state),
+                "result_type": self._result_type(result),
+                "state": self._state_payload(request.state),
             }
         )
         return result

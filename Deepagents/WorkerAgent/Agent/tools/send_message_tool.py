@@ -9,8 +9,8 @@ from pydantic import BaseModel, Field
 
 from MainServer.comm import AgentComm
 from MainServer.state import MessageType
-from Deepagents.SeedAgent.Agent.server.path_resolver import WORKSPACE_ROOT
-from Deepagents.SeedAgent.Agent.server.stream_events import emit_event
+from Deepagents.WorkerAgent.Agent.server.path_resolver import WORKSPACE_ROOT
+from Deepagents.WorkerAgent.Agent.server.stream_events import emit_event
 
 
 NETWORK_SCHEMES = ("http://", "https://", "ftp://", "s3://", "file://")

@@ -1,0 +1,10 @@
+{
+  "MainAgent": {
+    "provider": "openai",
+    "url": "",
+    "apikey": "",
+    "model": ["gpt-5-nano"],
+    "temperature": 0.0
+  }
+}
+

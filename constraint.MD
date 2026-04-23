@@ -7,8 +7,10 @@
 `middlewares/`、`tools/`、`server/` 这套新结构，不再使用旧的
 `Capabilities/` 作为目标目录。
 
-本轮暂时不迁移记忆系统。旧项目中的 `MemoryManage/*`、RAG、索引构建、
-记忆召回等内容先不进入本轮骨架。
+本轮暂时不迁移旧记忆系统。旧项目中的 `MemoryManage/*`、RAG、索引构建、
+记忆召回等内容先不进入本轮骨架；但可以接入 deepagents 自带的
+`MemoryMiddleware` 与 `SkillsMiddleware`，分别读取 `workspace/brain/AGENTS.md`
+和 `workspace/skills/*/SKILL.md`。
 
 ---
 
@@ -211,6 +213,9 @@ Scope 影响三个维度：
 - 使用命名 `SystemMessage.name` 作为能力 slot。
 - middleware hook 的真实类型要保持可见。
 - 中间件内部网络错误等应 fail-silent，不阻断 Agent 主链路。
+- 当前主 agent 除自定义 middleware 外，还应接入 deepagents 内置：
+  - `MemoryMiddleware`：读取 `workspace/brain/AGENTS.md`
+  - `SkillsMiddleware`：读取 `workspace/skills/*/SKILL.md`
 
 middleware 文件内部推荐统一维护：
 

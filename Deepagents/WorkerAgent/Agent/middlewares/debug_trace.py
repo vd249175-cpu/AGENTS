@@ -12,7 +12,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import Field
 
-from Deepagents.SeedAgent.Agent.middlewares.base import BaseAgentMiddleware, MiddlewareRuningConfig
+from Deepagents.WorkerAgent.Agent.middlewares.base import BaseAgentMiddleware, MiddlewareRuningConfig
 
 
 MIDDLEWARE_DIR = Path(__file__).resolve().parent

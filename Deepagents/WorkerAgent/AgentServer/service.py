@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from Deepagents.SeedAgent.Agent.MainAgent import (
+from Deepagents.WorkerAgent.Agent.MainAgent import (
     AGENT_SPEC,
     WORKSPACE_ROOT,
     SeedMainAgent,
@@ -481,7 +481,7 @@ def main() -> int:
     import uvicorn
 
     uvicorn.run(
-        "Deepagents.SeedAgent.AgentServer.service:app",
+        "Deepagents.WorkerAgent.AgentServer.service:app",
         host=os.getenv("SEED_AGENT_HOST", "127.0.0.1"),
         port=int(os.getenv("SEED_AGENT_PORT", "8010")),
         reload=False,

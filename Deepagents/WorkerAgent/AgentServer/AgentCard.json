@@ -1,0 +1,13 @@
+{
+  "agent_name": "WorkerAgent",
+  "capabilities": [
+    {
+      "title": "Messaging",
+      "content": "Send and receive AgentMail through MainServer using ReceiveMessagesMiddleware and SendMessagesMiddleware."
+    },
+    {
+      "title": "Trace",
+      "content": "Uses AgentStepTraceMiddleware and optional DebugTraceMiddleware."
+    }
+  ]
+}

@@ -9,13 +9,13 @@ from pydantic import Field
 
 from MainServer.comm import AgentComm
 from MainServer.state import MessageType
-from Deepagents.SeedAgent.Agent.middlewares.base import (
+from Deepagents.WorkerAgent.Agent.middlewares.base import (
     BaseAgentMiddleware,
     MiddlewareCapabilityPrompt,
     MiddlewareRuningConfig,
     set_named_system_message,
 )
-from Deepagents.SeedAgent.Agent.tools.send_message_tool import (
+from Deepagents.WorkerAgent.Agent.tools.send_message_tool import (
     SendMessageTool,
     ToolRuningConfigSc,
     ToolStateTydict,

@@ -30,9 +30,9 @@ class AgentSpec:
 
 
 AGENT_SPEC = AgentSpec(
-    name="SeedAgent",
-    role="seed agent",
-    description="负责验证新框架骨架、跨 Agent 通讯和工具/middleware 流式链路。",
+    name="WorkerAgent",
+    role="worker agent",
+    description="负责接收跨 Agent 任务、执行任务并回传结果与交付物。",
     responsibilities=(
         "组织当前会话的任务步骤",
         "通过 MainServer 与其他 Agent 通讯",

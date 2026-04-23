@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "defaultRunId": "seedagent-run",
+  "defaultThreadId": "default",
+  "eventType": "agent_step_timing",
+  "emitFullState": true
+}
+

@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-import uuid
+import secrets
+import string
 
 from MainServer.state import AgentMail, Link, MessageType, TaskInfo
+
+_ID_ALPHABET = string.ascii_lowercase + string.digits
+
+
+def short_id(length: int = 4) -> str:
+    return "".join(secrets.choice(_ID_ALPHABET) for _ in range(length))
 
 
 def make_message(
@@ -16,7 +23,7 @@ def make_message(
     attachments: list[Link] | None = None,
 ) -> AgentMail:
     return {
-        "message_id": str(uuid.uuid4()),
+        "message_id": short_id(),
         "from": src,
         "to": dst,
         "type": msg_type,
