@@ -1,12 +1,13 @@
 [project]
-name = "agents"
+name = "langvideo-agents"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "deepagents>=0.5.3",
-    "langchain>=1.2.15",
-    "langchain-ollama>=1.1.0",
-    "langchain-openai>=1.1.16",
+    "fastapi>=0.135.2",
+    "uvicorn[standard]>=0.42.0",
+    "deepagents>=0.4.12",
+    "langchain>=1.2.13",
+    "langchain-openai>=0.3.0",
+    "langchain-ollama>=1.0.1",
 ]
+

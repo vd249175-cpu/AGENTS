@@ -1,4 +1,4 @@
-"""Compatibility exports for the current MainServer protocol."""
+"""SeedAgent shared task and communication protocol aliases."""
 
 from MainServer.protocol import make_message
 from MainServer.state import (

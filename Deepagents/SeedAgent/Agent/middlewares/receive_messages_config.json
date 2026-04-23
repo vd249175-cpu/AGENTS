@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "defaultRunId": "seedagent-run",
+  "defaultThreadId": "default",
+  "guidancePrompt": "当收到 `<Inbox>` 用户消息时，先阅读内容，再决定是否回复、委派或继续当前任务。不要把收件箱当成普通用户输入忽略掉。",
+  "maxInboxItems": 20,
+  "peekPeersInGuidance": true
+}

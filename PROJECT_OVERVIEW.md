@@ -51,7 +51,7 @@ LANGVIDEO/
   - Layer 2，Agent 组装层。
   - `MainAgent.py` 负责构建主 agent，挂载模型、backend、middleware、checkpoint。
   - `protocol.py` 放通讯/任务层共享契约。
-  - `Models/` 放 `init_chat_model` 模型初始化和 JSON 模型配置。
+  - `Models/` 放 `init_chat_model` 模型初始化和 `model_config.json`。
   - `middlewares/` 放中间件和中间件配置 JSON。
   - `tools/` 放 agent 工具和工具配置 JSON。
   - `server/` 放 Agent 内部可复用逻辑和声明。
@@ -61,11 +61,13 @@ LANGVIDEO/
   - 中心化注册、状态同步、事件收集、消息路由服务。
   - 不持有 Agent 运行时，不做任务执行。
   - Agent 端只通过 `AgentComm` 通讯，不直接 HTTP 请求 MainServer。
+  - Agent 身份只使用 `agent_name`；`AgentMail.type="task"` 只是另一种消息格式。
+  - 附件使用 `Link`，工具内本地文件路径必须以 `/workspace` 开头，网络 URL 可直接传。
 
 ## Tool / Middleware 约束
 
 - tool 和 middleware 都优先使用单文件结构。
-- 文件开头不要使用 `from __future__ import annotations`。
+- middleware、tool 和 agent 装配文件开头不要使用 `from __future__ import annotations`；公共协议文件可使用它来表达新 TypedDict 协议。
 - `runtime: ToolRuntime` 和 middleware hook 的真实类型要保持可见。
 - 工具由 middleware 自动注册，不要在 `create_agent(...)` 里重复传同一批 tools。
 - 相同的一组 tool，尤其是共享统一 state 的 tool，应由同一个 middleware 统一挂载。

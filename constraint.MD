@@ -100,8 +100,8 @@ MainServer/
 
 | 文件 | 职责 | 红线 |
 |---|---|---|
-| `state.py` | 定义 `AgentCard`, `TaskInfo`, `AgentMessage`, `CollaborationState` 等 TypedDict | 这是跨 Agent 公共状态契约，结构变更必须同步评估所有 Agent |
-| `protocol.py` | `make_message()`，构造标准 `AgentMessage` | 只负责消息构造，不发送 |
+| `state.py` | 定义 `AgentCard`, `TaskInfo`, `AgentMail`, `CollaborationState` 等 TypedDict | 这是跨 Agent 公共状态契约，结构变更必须同步评估所有 Agent |
+| `protocol.py` | `make_message()`，构造标准 `AgentMail` | 只负责消息构造，不发送 |
 | `comm.py` | `AgentComm` 类，提供 `send / recv / peers` | 纯 SDK，不持有状态，不引入 `requests` / `httpx` |
 | `mail_router.py` | 路由本地附件到接收方 workspace | 不下载网络资源，不执行 Agent 任务 |
 | `main_server.py` | FastAPI 应用，注册、状态更新、事件收集、消息路由 | 不持有 Agent 运行时，不做任务执行 |
@@ -120,21 +120,24 @@ MainServer/
 ### 4.2 核心类型
 
 ```python
-TaskStatus  = Literal["pending", "running", "blocked", "done", "failed"]
-MessageType = Literal["assignment", "question", "answer", "result", "alert"]
+MessageType = Literal["task", "message"]
 
-Deliverable       # {"kind", "value", "summary"}
-CapabilityCard    # {"title", "summary", "content"}
-AgentCard         # {"agent_id", "type", "capabilities"}
-TaskInfo          # {"title", "goal", "description", "status", "owner", "deliverables"}
-AgentMessage      # {"message_id", "from", "to", "type", "content", "attachments", "timestamp"}
-AgentMessageBox   # {"inbox", "outbox"}
-CollaborationState       # {"agentcard", "tasks", "agent_messages"}
+Link              # {"link", "summary"}
+Deliverable       # Link 的兼容别名/子类
+CapabilityCard    # {"title", "content"}
+AgentCard         # {"agent_name", "capabilities"}
+TaskInfo          # {"title", "goal", "description", "owner", "deliverables"}
+AgentMail         # {"message_id", "from", "to", "type", "content", "attachments"}
+AgentMessage      # AgentMail 的兼容别名
+AgentMessageBox   # {"inbox", "outbox"}，内部保存 AgentMail
+CollaborationState       # {"agentcard", "agent_messages"}
 ```
 
 约束：
-- `AgentMessage.from` 字段保持 JSON 协议名 `"from"`，TypedDict 中用函数式声明绕过 Python 保留字。
-- `AgentMessage.type` 新增取值时必须同步更新 MainServer、Agent 协议和测试。
+- `AgentMail.from` 字段保持 JSON 协议名 `"from"`，TypedDict 中用函数式声明绕过 Python 保留字。
+- `AgentMail.from/to` 均使用 agent name，不再使用 agent id。
+- `AgentMail.type` 新增取值时必须同步更新 MainServer、Agent 协议和测试。
+- `type="task"` 只是另一种消息格式，不单独维护任务注册表和任务状态字段。
 - `CollaborationState` 顶级字段不得随意扩展；需要扩展时先更新约束和测试。
 
 ---
@@ -145,15 +148,19 @@ CollaborationState       # {"agentcard", "tasks", "agent_messages"}
 
 | 端点 | 方法 | 描述 |
 |---|---|---|
-| `POST /send` | 发送 | `to=null` 广播，不含发送方；`to=agent_id` 点对点 |
-| `GET /recv/{agent_id}` | 接收 | 一次性清空信箱，pull 模型，非 push |
-| `GET /agents/peers/{agent_id}` | 发现 | 返回当前 agent 可见的 peer |
+| `POST /send` | 发送 | `to=agent_name` 点对点，当前不做广播 |
+| `GET /recv/{agent_name}` | 接收 | 一次性清空信箱，pull 模型，非 push |
+| `GET /agents/peers/{agent_name}` | 发现 | 返回当前 agent 可见的 peer |
 
 ### 5.2 SDK 约束
 
 - Agent 端只通过 `AgentComm` 调用，不直接 HTTP 请求 MainServer。
 - `AgentComm` 依赖 `urllib.request`，不引入 `requests` / `httpx`。
 - 默认超时不超过 5 秒。
+- `AgentComm` 初始化和收发目标只使用 agent name。
+- `send_message_to_agent` 同时负责发送普通信息和任务信息：`msgType="message"` 发送文本，`msgType="task"` 发送 `TaskInfo`。
+- 附件通过 `attachments: list[Link]` 发送。工具入口中，本地文件路径必须以 `/workspace` 开头，工具会转换为当前 Agent workspace 下的宿主机路径；网络 URL 可直接传。
+- 接收方 workspace 相对位置固定为 `Deepagents/<agent_name>/workspace`，MainServer 不依赖注册 payload 中的 workspace 字段。
 
 ### 5.3 注册链路
 
@@ -183,7 +190,7 @@ Scope 影响三个维度：
 |---|---|
 | 发送 | 发送方只能向自己 scope 内的 agent 发消息；scope 外目标返回 403 |
 | 接收 | 接收方只保留来自自己 scope 内的消息；scope 外来源被过滤 |
-| 发现 | `GET /agents/peers/{agent_id}` 只返回 scope 内已注册 agent，且不包含自己 |
+| 发现 | `GET /agents/peers/{agent_name}` 只返回 scope 内已注册 agent，且不包含自己 |
 
 `/agents/online` 不受 scope 影响，仍返回全局列表，作为管理员视角。
 
@@ -197,7 +204,7 @@ Scope 影响三个维度：
 ### 6.1 middleware
 
 - middleware 文件优先单文件结构。
-- 开头不要使用 `from __future__ import annotations`。
+- middleware、tool 和 agent 装配文件开头不要使用 `from __future__ import annotations`；公共协议文件允许使用它来表达新 TypedDict 协议。
 - 声明 `MiddlewareCapabilityPrompt`、`MiddlewareRuningConfig`、`MiddlewareToolConfig`、`MiddlewareStateTydict`。
 - 暴露 `state_schema`。
 - 暴露 `tools`，并由 middleware 自动挂载工具。
@@ -218,7 +225,7 @@ middleware 文件内部推荐统一维护：
 ### 6.2 tool
 
 - tool 文件优先单文件结构。
-- 开头不要使用 `from __future__ import annotations`。
+- middleware、tool 和 agent 装配文件开头不要使用 `from __future__ import annotations`；公共协议文件允许使用它来表达新 TypedDict 协议。
 - 声明 `ToolInputSm`、`ToolDescriptionSc`、`ToolReturnSc`、`ToolStateTydict`、`ToolRuningConfigSc`。
 - 工具函数签名保留 `runtime: ToolRuntime`。
 - 工具只从 `runtime.state / runtime.stream_writer / runtime.tool_call_id` 读取运行时信息。
@@ -246,7 +253,7 @@ ReceiveMessagesMiddleware
 ```
 
 说明：
-- `ReceiveMessagesMiddleware` 必须最先挂载，先拉取信箱并注入 `<Inbox>`。
+- `ReceiveMessagesMiddleware` 必须最先挂载，先拉取信箱并追加一条包含 `<Inbox>` 的 user message。
 - 业务 middleware 负责挂载自己的提示词、工具、state 和内部运行逻辑。
 - `AgentStepTraceMiddleware` 负责 step timing / tool timing 流式事件。
 - `DebugTraceMiddleware` 只在 debug 模式挂载。
@@ -262,7 +269,8 @@ ReceiveMessagesMiddleware
 
 | 配置文件 | 消费方 | 用途 |
 |---|---|---|
-| `AgentApi.json` | MainAgent | 主 agent 模型 |
+| `model_config.json` | MainAgent | 主 agent 模型，使用 `chat_model` / `embedding_model` 结构 |
+| `AgentApi.json` | MainAgent | 旧兼容配置，仅在 `model_config.json` 不存在时回退 |
 | `ToolModel.json` | tools / SubAgent | 工具或子 agent 可选模型 |
 
 记忆系统暂不迁移，因此本轮不要求 `MemoryAgent.json`、`FlatRag.json`。
@@ -300,6 +308,12 @@ ReceiveMessagesMiddleware
 ## 10. workspace 边界约束
 
 `workspace/` 是 Agent 的本地工作目录，不是框架说明存放地。
+
+每个 Agent 的 sandbox 必须按 `agent_name` 隔离：
+- 容器名包含 agent name 和 workspace 路径 hash。
+- 宿主机只挂载 `Deepagents/<agent_name>/workspace`。
+- 容器内统一挂载为 `/workspace`，供模型和工具使用。
+- 不允许把项目根目录或其他 Agent workspace 挂进同一个 Agent sandbox。
 
 | 可以放 | 不可以放 |
 |---|---|

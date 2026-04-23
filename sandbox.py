@@ -5,10 +5,9 @@ mounted at /workspace. File operations and shell execution share the same
 container filesystem semantics.
 """
 
-from __future__ import annotations
-
 import hashlib
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -43,10 +42,20 @@ def get_deepagent_sandbox_dockerfile() -> Path:
     return Path(__file__).resolve().parent / "deepagent_sandbox.Dockerfile"
 
 
-def build_deepagent_sandbox_container_name(workspace_root: Path) -> str:
+def _safe_agent_name(agent_name: str | None) -> str:
+    raw = str(agent_name or "agent").strip().lower()
+    safe = re.sub(r"[^a-z0-9_.-]+", "-", raw).strip("-.")
+    return safe or "agent"
+
+
+def build_deepagent_sandbox_container_name(
+    workspace_root: Path,
+    *,
+    agent_name: str | None = None,
+) -> str:
     normalized = str(workspace_root.expanduser().resolve())
     suffix = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:10]
-    return f"deepagent-workspace-{suffix}"
+    return f"deepagent-{_safe_agent_name(agent_name)}-workspace-{suffix}"
 
 
 class LocalDockerSandbox(BaseSandbox):
@@ -311,17 +320,24 @@ class LocalDockerSandbox(BaseSandbox):
         return responses
 
 
-def get_deepagent_workspace_sandbox(workspace_root: Path | None = None) -> LocalDockerSandbox:
+def get_deepagent_workspace_sandbox(
+    workspace_root: Path | None = None,
+    *,
+    agent_name: str | None = None,
+) -> LocalDockerSandbox:
     resolved_root = (
         workspace_root.expanduser().resolve()
         if workspace_root is not None
         else (Path(__file__).resolve().parent / "workspace").resolve()
     )
-    cache_key = str(resolved_root)
+    cache_key = f"{_safe_agent_name(agent_name)}:{resolved_root}"
     sandbox = _DEEPAGENT_SANDBOX_CACHE.get(cache_key)
     if sandbox is None:
         sandbox = LocalDockerSandbox(
-            container_name=build_deepagent_sandbox_container_name(resolved_root),
+            container_name=build_deepagent_sandbox_container_name(
+                resolved_root,
+                agent_name=agent_name,
+            ),
             mount_dir=str(resolved_root),
             network_mode="bridge",
         )
