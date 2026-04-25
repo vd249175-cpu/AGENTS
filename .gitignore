@@ -9,7 +9,7 @@ Deepagents/*/Agent/Models/model_config.json
 
 # C extensions
 *.so
-
+tests/logs
 # Distribution / packaging
 .Python
 build/
