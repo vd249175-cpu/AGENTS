@@ -1,6 +1,16 @@
 {
   "agents": {
     "SeedAgent": {
+      "chat": {
+        "run_id": "seedagent-run",
+        "stream_mode": [
+          "messages",
+          "updates",
+          "custom"
+        ],
+        "thread_id": "default",
+        "version": "v2"
+      },
       "enabled": true,
       "scope": null,
       "template": "SeedAgent"

@@ -76,12 +76,20 @@ LANGVIDEO/
   - Agent 端只通过 `AgentComm` 通讯，不直接 HTTP 请求 MainServer。
   - Agent 身份只使用 `agent_name`；`AgentMail.type="task"` 只是另一种消息格式。
   - 附件使用 `Link`，工具内本地文件路径必须以 `/workspace` 开头，网络 URL 可直接传。
+  - 面向用户/前端的聊天入口是 `POST /user/chat`。`mode=direct` 会把文本、
+    content blocks、图片 URL/data URL 等归一成 user message 并代理目标
+    AgentServer `/invoke`；`mode=mail` 会构造 `AgentMail` 写入目标 inbox。
+    AgentServer 注册时应把 `service_url` 写入 metadata，便于 MainServer 代理。
+  - 前端可通过 `GET/PUT /user/chat/config/{agent_name}` 独立管理默认
+    `thread_id`、`run_id`、`stream_mode` 和 `version`；请求级参数会覆盖默认配置。
   - agent 发现和通讯 scope 由 MainServer 中心配置管理；默认本地配置是
     `MainServer/config/agents.local.json`，示例为 `MainServer/config/agents.example.json`。
   - scope 可以是 `None`、扁平 agent name 列表，也可以是嵌套列表；MainServer
     保存原始结构，路由判断时递归解析出可达 agent name。
   - 后端管理接口支持读取/修改中心配置、读取/修改单个 agent scope，并从
     `SeedAgent` 模板复制创建新 agent 目录。
+  - 复制新 agent 时不复制 `Agent/store`、mail、pycache 等运行态内容；也可通过
+    `POST /admin/agents/{agent_name}/runtime/clear` 手动清理本地缓存和临时数据库。
 - `workspace/skills/agent-browser/SKILL.md`
   - agent 侧浏览器自动化入口。
   - 只是 discovery stub，真正的浏览器流程由 `agent-browser skills get core` 提供。

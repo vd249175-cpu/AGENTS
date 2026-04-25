@@ -1,24 +1,37 @@
+import asyncio
+import urllib.error
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from MainServer.admin_config import (
     configured_scope,
     get_agent_config,
     load_config,
+    remove_agent_config,
     replace_agent_config,
     resolve_scope,
     save_config,
     scope_allows,
     update_agent_config,
 )
-from MainServer.agent_templates import create_agent_from_template
+from MainServer.agent_templates import clear_agent_runtime, create_agent_from_template
+from MainServer.agent_templates import delete_agent_directory, read_agent_runtime_config, write_agent_runtime_config
 from MainServer.mail_router import route_message_assets
+from MainServer.protocol import make_message
 from MainServer.state import AgentMail, MessageType
+from MainServer.user_chat import (
+    UserChatRequest,
+    UserChatRuntimeConfig,
+    build_invoke_payload,
+    build_mail_content,
+    post_json,
+)
 
 
 def _now() -> datetime:
@@ -94,12 +107,38 @@ class AgentScopeUpdate(BaseModel):
     scope: Any = None
 
 
+class AgentChatConfigUpdate(BaseModel):
+    thread_id: str = Field(default="default")
+    run_id: str | None = None
+    stream_mode: list[str] | str = Field(default_factory=lambda: ["messages", "updates", "custom"])
+    version: str = "v2"
+
+
+class AgentRuntimeClearRequest(BaseModel):
+    include_store: bool = True
+    include_mail: bool = True
+    include_knowledge: bool = False
+
+
 class CreateAgentRequest(BaseModel):
     agent_name: str
     source_agent: str = "SeedAgent"
     overwrite: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
     scope: Any = None
+
+
+def _record_service_url(record: "AgentRecord") -> str | None:
+    metadata = record.metadata or {}
+    for key in ("service_url", "base_url", "url"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.rstrip("/")
+    port = metadata.get("service_port") or metadata.get("port")
+    host = metadata.get("service_host") or record.host
+    if host and port:
+        return f"http://{host}:{port}".rstrip("/")
+    return None
 
 
 @dataclass
@@ -148,6 +187,7 @@ app = FastAPI(title="LANGVIDEO MainServer", version="1.0.0")
 _registry: dict[str, AgentRecord] = {}
 _mailboxes: dict[str, list[AgentMail]] = {}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+STATIC_ROOT = Path(__file__).resolve().parent / "static"
 
 
 def agent_workspace(agent_name: str) -> Path:
@@ -172,6 +212,21 @@ def _append_event(record: AgentRecord, event: dict[str, Any]) -> None:
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     return {"status": "ok", "time": _iso()}
+
+
+@app.get("/")
+async def index() -> FileResponse:
+    return FileResponse(STATIC_ROOT / "index.html")
+
+
+@app.get("/app.js")
+async def app_js() -> FileResponse:
+    return FileResponse(STATIC_ROOT / "app.js", media_type="application/javascript")
+
+
+@app.get("/styles.css")
+async def styles_css() -> FileResponse:
+    return FileResponse(STATIC_ROOT / "styles.css", media_type="text/css")
 
 
 @app.get("/agents")
@@ -351,6 +406,94 @@ async def recv_messages(agent_name: str) -> dict[str, Any]:
     return {"agent_name": agent_name, "messages": messages}
 
 
+def _agent_chat_config(agent_name: str) -> UserChatRuntimeConfig:
+    config = get_agent_config(agent_name)
+    raw_chat = config.get("chat", {})
+    if not isinstance(raw_chat, dict):
+        raw_chat = {}
+    return UserChatRuntimeConfig.model_validate(raw_chat)
+
+
+@app.get("/user/chat/config/{agent_name}")
+async def get_user_chat_config(agent_name: str) -> dict[str, Any]:
+    chat_config = _agent_chat_config(agent_name)
+    return {"agent_name": agent_name, "chat": chat_config.model_dump()}
+
+
+@app.put("/user/chat/config/{agent_name}")
+async def set_user_chat_config(agent_name: str, payload: AgentChatConfigUpdate) -> dict[str, Any]:
+    chat_config = UserChatRuntimeConfig.model_validate(payload.model_dump())
+    config = update_agent_config(agent_name, {"chat": chat_config.model_dump()})
+    return {"ok": True, "agent_name": agent_name, "chat": chat_config.model_dump(), "config": config}
+
+
+@app.post("/user/chat")
+async def user_chat(payload: UserChatRequest) -> dict[str, Any]:
+    if payload.mode == "mail":
+        try:
+            mail_content = build_mail_content(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        message = make_message(
+            src=payload.from_,
+            dst=payload.agent_name,
+            msg_type=payload.type,
+            content=mail_content,
+            attachments=payload.attachments,
+        )
+        routed = route_message_assets(message, str(agent_workspace(payload.agent_name)))
+        _mailboxes.setdefault(payload.agent_name, []).append(routed)
+        return {
+            "ok": True,
+            "mode": "mail",
+            "agent_name": payload.agent_name,
+            "message_id": message["message_id"],
+            "message": routed,
+        }
+
+    record = _registry.get(payload.agent_name)
+    if record is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    service_url = _record_service_url(record)
+    if service_url is None:
+        raise HTTPException(
+            status_code=409,
+            detail="agent has no service_url metadata; restart the AgentServer or register service_url manually",
+        )
+
+    chat_config = _agent_chat_config(payload.agent_name)
+    try:
+        invoke_payload = build_invoke_payload(payload, chat_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        response = await asyncio.to_thread(
+            post_json,
+            f"{service_url}/invoke",
+            invoke_payload,
+            payload.timeout,
+        )
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=exc.code, detail=error_body or exc.reason) from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"agent service unreachable: {exc.reason}") from exc
+    return {
+        "ok": True,
+        "mode": "direct",
+        "agent_name": payload.agent_name,
+        "service_url": service_url,
+        "chat": {
+            "thread_id": invoke_payload["session_id"],
+            "run_id": invoke_payload["run_id"],
+            "stream_mode": invoke_payload["stream_mode"],
+            "version": invoke_payload["version"],
+        },
+        "user_message": invoke_payload["messages"][-1],
+        "response": response,
+    }
+
+
 @app.get("/admin/agents/config")
 async def admin_get_agents_config() -> dict[str, Any]:
     return load_config()
@@ -377,6 +520,20 @@ async def admin_create_agent(payload: CreateAgentRequest) -> dict[str, Any]:
     return {"ok": True, "agent": result, "config": config}
 
 
+@app.delete("/admin/agents/{agent_name}")
+async def admin_delete_agent(agent_name: str) -> dict[str, Any]:
+    try:
+        result = delete_agent_directory(agent_name=agent_name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    removed_config = remove_agent_config(agent_name)
+    _registry.pop(agent_name, None)
+    _mailboxes.pop(agent_name, None)
+    return {"ok": True, "agent": result, "removed_config": removed_config}
+
+
 @app.put("/admin/agents/config")
 async def admin_replace_agents_config(payload: dict[str, Any]) -> dict[str, Any]:
     return save_config(payload)
@@ -389,6 +546,35 @@ async def admin_get_agent_config(agent_name: str) -> dict[str, Any]:
         "config": get_agent_config(agent_name),
         "registered": _registry.get(agent_name).snapshot() if agent_name in _registry else None,
     }
+
+
+@app.get("/admin/agents/{agent_name}/runtime-config")
+async def admin_get_agent_runtime_config(agent_name: str) -> dict[str, Any]:
+    try:
+        result = read_agent_runtime_config(agent_name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "agent_name": agent_name, **result}
+
+
+@app.patch("/admin/agents/{agent_name}/runtime-config")
+async def admin_patch_agent_runtime_config(agent_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        result = write_agent_runtime_config(agent_name, payload, merge=True)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "agent_name": agent_name, **result}
+
+
+@app.put("/admin/agents/{agent_name}/runtime-config")
+async def admin_replace_agent_runtime_config(agent_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        result = write_agent_runtime_config(agent_name, payload, merge=False)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "agent_name": agent_name, **result}
 
 
 @app.patch("/admin/agents/{agent_name}/config")
@@ -459,3 +645,19 @@ async def admin_set_agent_scope(agent_name: str, payload: AgentScopeUpdate) -> d
         "scope": payload.scope,
         "resolved_scope": resolve_scope(payload.scope),
     }
+
+
+@app.post("/admin/agents/{agent_name}/runtime/clear")
+async def admin_clear_agent_runtime(agent_name: str, payload: AgentRuntimeClearRequest) -> dict[str, Any]:
+    try:
+        result = clear_agent_runtime(
+            agent_name=agent_name,
+            include_store=payload.include_store,
+            include_mail=payload.include_mail,
+            include_knowledge=payload.include_knowledge,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "agent_name": agent_name, "runtime": result}

@@ -76,6 +76,14 @@ def replace_agent_config(agent_name: str, value: dict[str, Any]) -> dict[str, An
     return dict(value)
 
 
+def remove_agent_config(agent_name: str) -> dict[str, Any] | None:
+    config = load_config()
+    agents = config.setdefault("agents", {})
+    removed = agents.pop(agent_name, None)
+    save_config(config)
+    return dict(removed) if isinstance(removed, dict) else None
+
+
 def configured_scope(agent_name: str) -> tuple[bool, Any]:
     agent_config = get_agent_config(agent_name)
     if "scope" not in agent_config:

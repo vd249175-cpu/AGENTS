@@ -379,6 +379,13 @@ def create_app(scope: Any = None) -> FastAPI:
     resolved_scope = scope if scope is not None else _parse_scope()
     main_server_url = service_config.main_server_url
     observer = AgentObserver(main_server_url, agent_name=service_config.agent_name, scope=resolved_scope)
+    observer.state.metadata.update(
+        {
+            "service_url": f"http://{service_config.host}:{service_config.port}",
+            "service_host": service_config.host,
+            "service_port": service_config.port,
+        }
+    )
 
     def _sync_exception_hook(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
         payload = {

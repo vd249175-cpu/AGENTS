@@ -332,6 +332,15 @@ def create_app(scope: list[str] | None = None) -> FastAPI:
     resolved_scope = scope if scope is not None else _parse_scope()
     main_server_url = os.getenv("MAIN_SERVER_URL", "http://127.0.0.1:8000")
     observer = AgentObserver(main_server_url, scope=resolved_scope)
+    service_host = os.getenv("AGENT_HOST", "127.0.0.1")
+    service_port = int(os.getenv("AGENT_PORT", "8011"))
+    observer.state.metadata.update(
+        {
+            "service_url": f"http://{service_host}:{service_port}",
+            "service_host": service_host,
+            "service_port": service_port,
+        }
+    )
 
     def _sync_exception_hook(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
         payload = {

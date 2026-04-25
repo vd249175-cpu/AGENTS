@@ -98,17 +98,47 @@ class IngestKnowledgeTool:
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or Config()
         self._chunk_apply = None
+        self._chunk_apply_key: str | None = None
         self.tool = self.create_tool()
 
-    def _get_chunk_apply(self):
-        if self._chunk_apply is None:
-            self._chunk_apply = build_chunk_apply_tool(agent_name=self.config.agentName, config=self.config)
+    def _chunk_apply_cache_key(self, config: Any) -> str:
+        key_fields = {
+            name: getattr(config, name, None)
+            for name in (
+                "agentName",
+                "knowledgeRunId",
+                "neo4jUri",
+                "neo4jUsername",
+                "neo4jDatabase",
+                "embeddingProvider",
+                "embeddingModel",
+                "embeddingBaseUrl",
+                "embeddingDimensions",
+                "chunkApplyCheckpointPath",
+                "chunkApplyCachePath",
+                "chunkApplyStagingPath",
+            )
+        }
+        return json.dumps(key_fields, ensure_ascii=False, sort_keys=True, default=str)
+
+    def _get_chunk_apply(self, config: Any | None = None):
+        effective_config = config or self.config
+        cache_key = self._chunk_apply_cache_key(effective_config)
+        if self._chunk_apply is None or self._chunk_apply_key != cache_key:
+            self.close()
+            self._chunk_apply = build_chunk_apply_tool(
+                agent_name=str(getattr(effective_config, "agentName", self.config.agentName)),
+                config=effective_config,
+            )
+            self._chunk_apply_key = cache_key
         return self._chunk_apply
 
     def close(self) -> None:
         close = getattr(self._chunk_apply, "close", None) if self._chunk_apply is not None else None
         if callable(close):
             close()
+        self._chunk_apply = None
+        self._chunk_apply_key = None
 
     def create_tool(self):
         current_config = self.config
@@ -143,7 +173,7 @@ class IngestKnowledgeTool:
                         "path": str(host_path),
                     },
                 )
-                result = tool_owner._get_chunk_apply().invoke(
+                result = tool_owner._get_chunk_apply(context).invoke(
                     {
                         "path": str(host_path),
                         "resume": _context_value(context, current_config, "resume") if resume is None else resume,

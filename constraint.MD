@@ -163,6 +163,8 @@ CollaborationState       # {"agentcard", "agent_messages"}
 | `POST /send` | 发送 | `to=agent_name` 点对点，当前不做广播 |
 | `GET /recv/{agent_name}` | 接收 | 一次性清空信箱，pull 模型，非 push |
 | `GET /agents/peers/{agent_name}` | 发现 | 返回当前 agent 可见的 peer |
+| `POST /user/chat` | 用户入口 | 把用户输入归一成 user message；`mode=direct` 代理目标 AgentServer `/invoke`，`mode=mail` 写入目标 agent inbox |
+| `GET/PUT /user/chat/config/{agent_name}` | 用户会话配置 | 前端读写默认 `thread_id`、`run_id`、`stream_mode`、`version` |
 
 ### 5.2 SDK 约束
 
@@ -173,6 +175,15 @@ CollaborationState       # {"agentcard", "agent_messages"}
 - `send_message_to_agent` 同时负责发送普通信息和任务信息：`msgType="message"` 发送文本，`msgType="task"` 发送 `TaskInfo`。
 - 附件通过 `attachments: list[Link]` 发送。工具入口中，本地文件路径必须以 `/workspace` 开头，工具会转换为当前 Agent workspace 下的宿主机路径；网络 URL 可直接传。
 - 接收方 workspace 相对位置固定为 `Deepagents/<agent_name>/workspace`，MainServer 不依赖注册 payload 中的 workspace 字段。
+- 面向前端或外部调用的用户聊天入口统一使用 `POST /user/chat`：
+  - `mode="direct"` 时，MainServer 根据注册 metadata 中的 `service_url` 把归一化后的
+    `{"role": "user", "content": ...}` 发送到目标 AgentServer `/invoke`。
+  - `mode="mail"` 时，MainServer 构造 `AgentMail` 写入目标 agent inbox；附件仍按
+    `mail_router` 路由到接收方 workspace。
+  - 多模态内容允许通过 `content`/`parts` 传入已有 content blocks，也允许把图片
+    URL 或 data URL 放进 `attachments`，入口会转换为 `image_url` block。
+  - `thread_id` 与历史 `session_id` 等价；若请求未显式传入，入口读取
+    `/user/chat/config/{agent_name}` 中的默认 `thread_id/run_id`。
 - 浏览器自动化是 agent 侧能力，不是 Codex 自身能力；它通过 `workspace/skills/agent-browser/SKILL.md` 接入，Docker sandbox 提供 `agent-browser` + `/usr/bin/chromium`，真实流程由 CLI 的 `skills get core` 提供。
 - SeedAgent 记忆能力通过 `memory/` 包接入：`ingest_knowledge_document` 将
   `/workspace/knowledge/...` 文件切分写入记忆图，`manage_knowledge` 管理、查询、
@@ -224,6 +235,7 @@ MainServer 后端管理接口：
 | `/admin/agents/create` | `POST` | 从 `SeedAgent` 或指定模板复制创建新 Agent 目录，并写入中心配置 |
 | `/admin/agents/{agent_name}/config` | `GET/PATCH/PUT` | 读取、合并或替换单个 Agent 的配置 |
 | `/admin/agents/{agent_name}/scope` | `GET/PUT` | 读取或替换单个 Agent 的原始 scope，并返回解析后的可达 agent |
+| `/admin/agents/{agent_name}/runtime/clear` | `POST` | 清理本地运行态目录，默认清 `Agent/store` 和 `workspace/mail`，不清业务 knowledge |
 
 ---
 
