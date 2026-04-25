@@ -1,0 +1,5 @@
+公开入口示例第一段。
+ChunkApplyTool 会读取单个文件，切分成 chunk，并写入 Neo4j。
+
+公开入口示例第二段。
+长文档可以通过 shard_count、max_workers 和 reference_bytes 调整处理速度。

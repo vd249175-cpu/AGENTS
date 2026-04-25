@@ -1,0 +1,21 @@
+{
+  "neo4j_config_path": "workspace/config/database_config.json",
+  "trace_limit": 16,
+  "capability_preset": {
+    "run_id": null,
+    "keyword_top_k": 5,
+    "keyword_top_k_limit": 20,
+    "distance_top_k": 5,
+    "distance_top_k_limit": 20,
+    "distance_max_distance": 1.0,
+    "useful_max_items": 32,
+    "useful_max_total_chars": 4096,
+    "blocked_max_items": 32,
+    "blocked_max_total_chars": 4096,
+    "embedding_provider": null,
+    "embedding_model": null,
+    "embedding_base_url": null,
+    "embedding_api_key": null,
+    "embedding_dimensions": null
+  }
+}

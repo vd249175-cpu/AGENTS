@@ -1,0 +1,8 @@
+{
+  "neo4j_config_path": "workspace/config/database_config.json",
+  "run_id": null,
+  "temperature": 0.0,
+  "debug": false,
+  "stream_inner_agent": false,
+  "inner_recursion_limit": 64
+}

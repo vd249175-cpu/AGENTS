@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local OS files
+.DS_Store
+
+# Runtime stores
+store/cache/*.sqlite3
+store/checkpoint/*.sqlite3
+store/staging/*.sqlite3
+
+# Live-test input artifacts
+workspace/knowledge/focus_public_doc_*.txt
+workspace/knowledge/public_entry_doc_*.txt
+workspace/logs/*.json

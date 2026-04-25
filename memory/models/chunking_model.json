@@ -1,0 +1,10 @@
+{
+  "model_name": "gpt-5.4-nano",
+  "provider": "openai",
+  "streaming": true,
+  "supports_line_number_chunking": true,
+  "line_wrap_width": 30,
+  "shared_model_config": "model_config.json",
+  "chat_model_key": "chat_model",
+  "embedding_model_key": "embedding_model"
+}

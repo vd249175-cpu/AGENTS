@@ -133,12 +133,12 @@ def build_middlewares(*, comm: AgentComm | None, debug: bool) -> list[Any]:
             backend=context_backend,
             sources=["/skills"],
         ),
-        ReceiveMessagesMiddleware(comm=comm),
-        SendMessagesMiddleware(comm=comm),
-        AgentStepTraceMiddleware(),
+        ReceiveMessagesMiddleware(comm=comm).middleware,
+        SendMessagesMiddleware(comm=comm).middleware,
+        AgentStepTraceMiddleware().middleware,
     ]
     if debug:
-        middlewares.append(DebugTraceMiddleware())
+        middlewares.append(DebugTraceMiddleware().middleware)
     return middlewares
 
 

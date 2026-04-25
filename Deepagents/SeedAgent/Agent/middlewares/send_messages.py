@@ -1,21 +1,20 @@
+"""Single-file send-messages middleware following the demo wrapper pattern."""
+
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from langchain.agents.middleware import AgentState, ModelRequest, ModelResponse
+from langchain.agents.middleware import AgentState, ExtendedModelResponse, ModelRequest, ModelResponse
 from langchain.agents.middleware.types import ResponseT
 from langchain_core.messages import AIMessage
 from pydantic import Field
 
 from MainServer.comm import AgentComm
 from MainServer.state import MessageType
-from Deepagents.SeedAgent.Agent.middlewares.base import (
-    BaseAgentMiddleware,
-    MiddlewareCapabilityPrompt,
-    MiddlewareRuningConfig,
-    set_named_system_message,
-)
-from Deepagents.SeedAgent.Agent.tools.send_message_tool import (
+from ..server.demo_server import emit, set_named_system_message
+from ..server.path_resolver import WORKSPACE_ROOT
+from .base import BaseAgentMiddleware, MiddlewareCapabilityPrompt, MiddlewareRuningConfig
+from ..tools.send_message_tool import (
     SendMessageTool,
     ToolRuningConfigSc,
     ToolStateTydict,
@@ -25,11 +24,7 @@ from Deepagents.SeedAgent.Agent.tools.send_message_tool import (
 MIDDLEWARE_DIR = Path(__file__).resolve().parent
 
 
-class MiddlewareStateTydict(AgentState, ToolStateTydict, total=False):
-    sendMessagesGuidanceInjected: bool
-
-
-class SendMessagesRuningConfig(MiddlewareRuningConfig):
+class Config(MiddlewareRuningConfig):
     guidancePrompt: str = Field(
         default=(
             "当你需要与其他 Agent 或 MainServer 通讯时，使用 `send_message_to_agent`。"
@@ -42,22 +37,45 @@ class SendMessagesRuningConfig(MiddlewareRuningConfig):
     peekPeersInGuidance: bool = Field(default=True)
     blockSelfTarget: bool = Field(default=True)
 
+    @classmethod
+    def load_config_send_messages(cls, source=None):
+        return cls.load(source)
 
-middleware_runingconfig = SendMessagesRuningConfig.load(
-    MIDDLEWARE_DIR / "send_messages_config.json"
-)
+
+SendMessagesRuningConfig = Config
+
+
+class SubState(AgentState, ToolStateTydict, total=False):
+    sendMessagesGuidanceInjected: bool
+
+
+MiddlewareStateTydict = SubState
+
+
+class MiddlewareSchema:
+    name = "send_messages"
+    tools = {"send_message_to_agent": SendMessageTool}
+    state_schema = SubState
+
+
+middleware_runingconfig = Config.load_config_send_messages(MIDDLEWARE_DIR / "send_messages_config.json")
 middleware_capability_prompts = [
     MiddlewareCapabilityPrompt(
         name="middleware.send_messages.guidance",
         prompt=middleware_runingconfig.guidancePrompt,
     )
 ]
-MiddlewareToolConfig = {"tools": {}, "toolStateTydicts": {"send_message_to_agent": ToolStateTydict}}
 
 
-class SendMessagesMiddleware(BaseAgentMiddleware):
-    name = "send_messages"
-    state_schema = MiddlewareStateTydict
+def _current_agent_name(comm: AgentComm | None) -> str | None:
+    if comm is None:
+        return None
+    return str(comm.agent_name or "").strip() or None
+
+
+class Middleware(BaseAgentMiddleware):
+    name = MiddlewareSchema.name
+    state_schema = SubState
 
     def __init__(
         self,
@@ -83,14 +101,9 @@ class SendMessagesMiddleware(BaseAgentMiddleware):
             tools=list(self.toolConfig["tools"].values()),
         )
 
-    def _current_agent_name(self) -> str | None:
-        if self.comm is None:
-            return None
-        return str(self.comm.agent_name or "").strip() or None
-
     def _with_peers(self, request: ModelRequest[Any]) -> ModelRequest[Any]:
         guided = self._with_guidance(request)
-        agent_name = self._current_agent_name()
+        agent_name = _current_agent_name(self.comm)
         messages = set_named_system_message(
             list(guided.messages),
             name="middleware.send_messages.identity",
@@ -130,3 +143,22 @@ class SendMessagesMiddleware(BaseAgentMiddleware):
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[ResponseT]]],
     ) -> ModelResponse[ResponseT] | AIMessage:
         return await handler(self._with_peers(request))
+
+
+class SendMessagesMiddleware:
+    name = MiddlewareSchema.name
+    config = Config
+    substate = SubState
+    middlewareschema = MiddlewareSchema
+
+    def __init__(
+        self,
+        *,
+        comm: AgentComm | None = None,
+        runingConfig: SendMessagesRuningConfig | None = None,
+    ) -> None:
+        self.config = runingConfig or middleware_runingconfig
+        self.middleware = Middleware(comm=comm, runingConfig=self.config)
+
+
+send_messages_middleware = SendMessagesMiddleware().middleware

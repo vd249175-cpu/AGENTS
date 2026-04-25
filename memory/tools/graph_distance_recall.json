@@ -1,0 +1,7 @@
+{
+  "neo4j_config_path": "workspace/config/database_config.json",
+  "run_id": null,
+  "default_top_k": 5,
+  "top_k_limit": 20,
+  "default_max_distance": 1.0
+}

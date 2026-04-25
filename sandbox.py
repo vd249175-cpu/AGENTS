@@ -34,7 +34,7 @@ def get_docker_cmd() -> str:
 
 
 DOCKER_CMD = get_docker_cmd()
-DEEPAGENT_SANDBOX_IMAGE = "deepagent-sandbox-base:latest"
+DEEPAGENT_SANDBOX_IMAGE = "deepagent-sandbox-browser:latest"
 _DEEPAGENT_SANDBOX_CACHE: dict[str, "LocalDockerSandbox"] = {}
 
 

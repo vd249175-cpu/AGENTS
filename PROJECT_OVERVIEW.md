@@ -8,9 +8,14 @@
 - `tools/`：agent 工具实现和工具配置 JSON。
 - `server/`：Agent 内部公共服务区，放可复用逻辑和声明。
 - `SubAgent/`：工具或 middleware 中会用到的 agent，或主 agent 的子 agent。
+- 当前中间键和工具正在按 `demo/NESTED_DEMO_FRAMEWORK_CONSTRAINTS.md`
+  收拢成 `Config / SubState / Schema / helper / wrapper / default entry`
+  的单文件形态；共享的 demo 级 helper 现在放在 `Agent/server/demo_server.py`。
 
-本轮暂时不迁移记忆系统。旧项目中的 `MemoryManage/*`、RAG、索引构建、
-记忆召回等内容先不进入骨架。
+当前已开始接入复制到本项目的 `memory/` 包。第一步接在 `SeedAgent`：
+`ingest_knowledge_document` 负责把 `workspace/knowledge` 中的长文档切分进入
+记忆图，`manage_knowledge` 负责查询、整理、修正和关联记忆内容。旧项目中的
+`MemoryManage/*`、RAG、索引构建、记忆召回不直接迁入骨架。
 
 ## 目录摘要
 
@@ -63,6 +68,13 @@ LANGVIDEO/
   - Agent 端只通过 `AgentComm` 通讯，不直接 HTTP 请求 MainServer。
   - Agent 身份只使用 `agent_name`；`AgentMail.type="task"` 只是另一种消息格式。
   - 附件使用 `Link`，工具内本地文件路径必须以 `/workspace` 开头，网络 URL 可直接传。
+- `workspace/skills/agent-browser/SKILL.md`
+  - agent 侧浏览器自动化入口。
+  - 只是 discovery stub，真正的浏览器流程由 `agent-browser skills get core` 提供。
+- `memory/`
+  - 复制进当前项目的记忆管理包。
+  - 当前通过 SeedAgent 的 bridge 使用公开入口 `ChunkApplyTool` 和
+    `KnowledgeManagerCapabilityMiddleware`。
 
 ## Tool / Middleware 约束
 
@@ -74,6 +86,7 @@ LANGVIDEO/
 - system message 使用稳定的 `name` 做能力 slot。
 - tool 返回 `Command(update=...)`，并在 `update["messages"]` 中放 `ToolMessage`。
 - middleware 内部网络错误等应 fail-silent，不阻断 Agent 主链路。
+- 浏览器自动化不要做成 Codex 自身能力；它是 agent workspace skill，运行在 sandbox Docker 中。
 
 ## 测试注意事项
 

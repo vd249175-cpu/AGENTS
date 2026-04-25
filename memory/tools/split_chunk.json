@@ -1,0 +1,5 @@
+{
+  "line_wrap_width": 30,
+  "emit_tool_message_content": true,
+  "default_max_retries": 3
+}

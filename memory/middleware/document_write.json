@@ -1,0 +1,4 @@
+{
+  "neo4j_config_path": "workspace/config/database_config.json",
+  "trace_limit": 16
+}

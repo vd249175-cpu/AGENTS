@@ -1,0 +1,10 @@
+{
+  "history_line_count": 4,
+  "active_line_count": 8,
+  "preview_line_count": 4,
+  "line_wrap_width": 30,
+  "window_back_bytes": 1200,
+  "window_forward_bytes": 2400,
+  "trace_limit": 16,
+  "max_retries": 3
+}

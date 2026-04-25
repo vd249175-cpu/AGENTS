@@ -1,3 +1,5 @@
+"""Single-file communication tool following the demo wrapper pattern."""
+
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -9,11 +11,36 @@ from pydantic import BaseModel, Field
 
 from MainServer.comm import AgentComm
 from MainServer.state import MessageType
-from Deepagents.SeedAgent.Agent.server.path_resolver import WORKSPACE_ROOT
-from Deepagents.SeedAgent.Agent.server.stream_events import emit_event
+from ..server.demo_server import StrictConfig, config_from_external, emit, get_nested_count, update_nested_count
+from ..server.path_resolver import WORKSPACE_ROOT
 
 
 NETWORK_SCHEMES = ("http://", "https://", "ftp://", "s3://", "file://")
+
+
+class Config(StrictConfig):
+    defaultDestination: str | None = Field(default=None, description="Default target agent name.")
+    defaultMessageType: MessageType = Field(default="message", description="Default message type.")
+    hideToolMessageContent: bool = Field(default=False, description="Whether to hide ToolMessage content.")
+    currentAgentName: str | None = Field(default=None, description="Current agent name for self-send checks.")
+    blockSelfTarget: bool = Field(default=True, description="Block messages sent to the current agent.")
+
+    @classmethod
+    def load_config_send_message_tool(cls, source=None):
+        return config_from_external(cls, source)
+
+
+ToolRuningConfigSc = Config
+
+
+class SubState(AgentState, total=False):
+    sendMessageTotalRuns: int
+    sendMessageLastTarget: str | None
+    sendMessageLastResult: str | None
+    sendMessageLastError: str | None
+
+
+ToolStateTydict = SubState
 
 
 class ToolLinkSc(BaseModel):
@@ -30,7 +57,10 @@ class ToolTaskInfoSc(BaseModel):
 
 
 class ToolInputSm(BaseModel):
-    content: str | None = Field(default=None, description="Message body. For msgType=task this can be used to auto-build taskInfo.")
+    content: str | None = Field(
+        default=None,
+        description="Message body. For msgType=task this can be used to auto-build taskInfo.",
+    )
     dst: str | None = Field(default=None, description="Target agent name. Empty value uses the default target.")
     msgType: MessageType = Field(default="message", description="Message type.")
     taskInfo: ToolTaskInfoSc | None = Field(default=None, description="Structured task content when msgType=task.")
@@ -56,19 +86,12 @@ class ToolReturnSc(BaseModel):
     failureText: str = Field(default="Message send failed.")
 
 
-class ToolStateTydict(AgentState, total=False):
-    sendMessageTotalRuns: int
-    sendMessageLastTarget: str | None
-    sendMessageLastResult: str | None
-    sendMessageLastError: str | None
-
-
-class ToolRuningConfigSc(BaseModel):
-    defaultDestination: str | None = Field(default=None)
-    defaultMessageType: MessageType = Field(default="message")
-    hideToolMessageContent: bool = Field(default=False)
-    currentAgentName: str | None = Field(default=None)
-    blockSelfTarget: bool = Field(default=True)
+class ToolSchema:
+    toolName = "send_message_to_agent"
+    name = toolName
+    args_schema = ToolInputSm
+    description = ToolDescriptionSc().toolDescription
+    toolfeedback = ToolReturnSc
 
 
 ToolSpec = {
@@ -78,7 +101,8 @@ ToolSpec = {
     "returnsSc": ToolReturnSc(),
 }
 
-tool_runingconfig = ToolRuningConfigSc()
+
+tool_runingconfig = Config.load_config_send_message_tool(Path(__file__).with_name("send_message_tool_config.json"))
 
 
 def _is_network_url(link: str) -> bool:
@@ -145,6 +169,11 @@ def _task_payload(
 
 
 class SendMessageTool:
+    name = ToolSchema.name
+    config = Config
+    substate = SubState
+    toolschema = ToolSchema
+
     def __init__(
         self,
         *,
@@ -156,20 +185,20 @@ class SendMessageTool:
         self.toolSpec = toolSpec
         self.runingConfig = runingConfig
         self.stateTydict = toolSpec["stateTydict"]
-        self.tool = self.buildTool()
+        self.tool = self.build_tool()
 
-    def buildTool(self):
+    def build_tool(self):
         tool_spec = self.toolSpec
-        description = tool_spec["description"]
-        returns = tool_spec["returnsSc"]
+        description: ToolDescriptionSc = tool_spec["description"]  # type: ignore[assignment]
+        returns: ToolReturnSc = tool_spec["returnsSc"]  # type: ignore[assignment]
 
         @tool(
             description.toolName,
             args_schema=tool_spec["inputSm"],
             description=description.toolDescription,
         )
-        def runSendMessageTool(
-            runtime: ToolRuntime,
+        def send_message_to_agent(
+            runtime: ToolRuntime[Config, SubState],
             content: str | None = None,
             dst: str | None = None,
             msgType: MessageType = "message",
@@ -178,11 +207,12 @@ class SendMessageTool:
         ) -> Command:
             current_state = runtime.state
             writer = runtime.stream_writer
-            target = dst or self.runingConfig.defaultDestination
-            message_type = msgType or self.runingConfig.defaultMessageType
+            context = runtime.context or self.runingConfig
+            target = (dst or context.defaultDestination or "").strip() or None
+            message_type = msgType or context.defaultMessageType
 
             try:
-                emit_event(
+                emit(
                     writer,
                     {
                         "type": "tool",
@@ -196,10 +226,8 @@ class SendMessageTool:
                     raise RuntimeError("AgentComm is not injected; cannot send cross-agent messages.")
                 if not target:
                     raise ValueError("dst or defaultDestination must provide a target agent name.")
-                current_agent_name = str(
-                    self.runingConfig.currentAgentName or getattr(self.comm, "agent_name", "") or ""
-                ).strip()
-                if self.runingConfig.blockSelfTarget and current_agent_name and target == current_agent_name:
+                current_agent_name = str(context.currentAgentName or getattr(self.comm, "agent_name", "") or "").strip()
+                if context.blockSelfTarget and current_agent_name and target == current_agent_name:
                     raise ValueError(
                         f"target agent '{target}' is the current agent; self-send is blocked by default."
                     )
@@ -229,7 +257,7 @@ class SendMessageTool:
                     f"attachments={len(normalized_attachments)}\n"
                     f"server_result={result}"
                 )
-                emit_event(
+                emit(
                     writer,
                     {
                         "type": "tool",
@@ -238,12 +266,12 @@ class SendMessageTool:
                         "target": target,
                     },
                 )
-                message_content = "" if self.runingConfig.hideToolMessageContent else result_text
+                message_content_text = "" if context.hideToolMessageContent else result_text
                 return Command(
                     update={
                         "messages": [
                             ToolMessage(
-                                content=message_content,
+                                content=message_content_text,
                                 tool_call_id=runtime.tool_call_id,
                             )
                         ],
@@ -260,7 +288,7 @@ class SendMessageTool:
                     "suggestion=Check whether AgentComm is injected, target agent is online, scope allows it, "
                     "and content is not empty."
                 )
-                emit_event(
+                emit(
                     writer,
                     {
                         "type": "tool",
@@ -284,4 +312,11 @@ class SendMessageTool:
                     }
                 )
 
-        return runSendMessageTool
+        return send_message_to_agent
+
+
+send_message_to_agent = SendMessageTool(comm=None).tool
+send_message_tool = SendMessageTool
+ToolDescription = ToolDescriptionSc
+ToolInput = ToolInputSm
+ToolReturn = ToolReturnSc

@@ -485,5 +485,6 @@ def main() -> int:
         host=os.getenv("SEED_AGENT_HOST", "127.0.0.1"),
         port=int(os.getenv("SEED_AGENT_PORT", "8010")),
         reload=False,
+        access_log=False,
     )
     return 0

@@ -2,7 +2,8 @@
 
 ## Current Work
 
-当前正在把旧项目的非记忆能力迁移到新的 LANGVIDEO 多 Agent 框架骨架。
+当前任务已经切换为：按照 `demo/NESTED_DEMO_FRAMEWORK_CONSTRAINTS.md` 的
+新规范，重构当前项目里的中间键和工具，并继续保持多 Agent 通讯骨架可运行。
 
 旧项目迁移来源：
 - `/Users/apexwave/Desktop/Projects/AGENTS`
@@ -14,14 +15,27 @@
 - 顶层继续使用 `Deepagents/` + `MainServer/`。
 - `Deepagents/*/Agent/` 内部不再使用旧的 `Capabilities/` 作为目标目录。
 - `Agent/` 内部采用 `Models/`、`SubAgent/`、`middlewares/`、`tools/`、`store/`、`server/`、`sandbox.py`。
+- 中间键和工具要按 demo 规范重构成 `Config` / `SubState` / `Schema` /
+  `helper` / `wrapper` / `default entry` 这套单文件形态。
+- 上层 agent 要把完整 `context` 继续向下透传给 middleware / tool / nested agent。
+- middleware 只挂工具，不在 `create_agent(...)` 里重复传同一批 tools。
 - 通讯协议以 `MainServer/state.py` 的 `AgentMail` 为准，旧 `AgentMessage` 仅作为兼容别名。
 - Agent 身份只使用 `agent_name`，不再使用单独的 `agent_id`。
 - Sandbox 按 `agent_name` 隔离，容器名包含 agent name，并只挂载对应 `Deepagents/<agent_name>/workspace` 到容器内 `/workspace`。
 - `AgentMail.type="task"` 只是另一种消息格式，不单独注册和管理任务状态。
 - 附件传递使用 `Link`，模型工具里本地文件必须写成 `/workspace/...`；网络 URL 可以直接传。
+- 浏览器自动化通过 `workspace/skills/agent-browser/SKILL.md` 给 agent 使用，运行在 Docker sandbox 里的 `agent-browser` + Chromium，不是 Codex 自身能力。
 - 模型配置使用项目内 `Deepagents/*/Agent/Models/model_config.json`；该文件包含本地凭据，默认不提交。
 - MainAgent backend 统一通过当前项目定义的 `sandbox.py` 创建。
-- 本轮暂时不迁移记忆系统，旧项目的 `MemoryManage/*`、RAG、索引构建、记忆召回先不进入骨架。
+- 当前已开始接入复制到本项目的 `memory/` 包；先在 `SeedAgent` 上挂载
+  `ingest_knowledge_document` 工具和 `manage_knowledge` 中间键，用于把
+  `workspace/knowledge` 中的长文档切分进入记忆图，并管理记忆内容。
+- SeedAgent 的 chunk 入库配置关闭文档级 run_id 派生，确保
+  `ingest_knowledge_document` 和 `manage_knowledge` 共用 `SeedAgent-knowledge`
+  这一套 Agent 知识库。
+- 旧项目的 `MemoryManage/*`、RAG、索引构建、记忆召回仍不直接迁入骨架；
+  记忆能力通过当前 `memory/` 包的 demo 风格 wrapper 接入。
+- demo 规范是当前 middleware/tool 重构的最高实现参照，后续若和旧实现冲突，优先服从 demo 规范再同步其他约束文档。
 
 ## Before Editing
 
@@ -73,3 +87,24 @@
 参考官方文档：
 - https://docs.langchain.com/oss/python/langchain/streaming
 - https://docs.langchain.com/langgraph-platform/streaming
+
+## Test Output Rule
+
+真实模型测试既要完整观察内部执行，也要避免控制台刷屏。
+
+控制台输出规则：
+- 不打印重复前缀；同一阶段只用一次短标签，例如 `setup:`、`planner:`、`worker:`、`verify:`。
+- 不逐条打印完整中间过程；只输出关键里程碑、最终结果和日志路径。
+- 不打印完整 state、完整 message、完整 event payload、完整模型 chunk。
+- 失败时只输出阶段、简短原因和下一步可操作线索。
+
+日志规则：
+- 测试必须把完整监控过程保存到 `tests/logs/` 下的 `.jsonl` 文件。
+- 完整日志里保存 health、status、event、request outcome、verification 等原始或近原始信息。
+- 控制台摘要必须包含本次完整日志路径，便于需要时回放。
+- 查看日志时默认只看末尾，例如 `tail -n 80 <log.jsonl>`；只有定位具体问题时才按关键字检索或打开更多内容。
+
+断言规则：
+- 真实模型测试不要用 `assert` 在中途卡死流程。
+- 每个阶段都收集 `ok/error/reason`，测试尽量继续执行到 summary。
+- 最后统一给出 `planner_ok`、`worker_ok`、`delivery_ok` 和退出码。

@@ -1,0 +1,6 @@
+{
+  "max_items": 24,
+  "max_total_chars": 4096,
+  "max_summary_chars": 160,
+  "scan_message_limit": 128
+}

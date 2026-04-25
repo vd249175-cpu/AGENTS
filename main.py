@@ -20,10 +20,15 @@ def main() -> int:
 
     import uvicorn
 
-    uvicorn.run("MainServer.main_server:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run(
+        "MainServer.main_server:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=False,
+        access_log=False,
+    )
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

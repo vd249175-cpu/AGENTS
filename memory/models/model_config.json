@@ -1,0 +1,16 @@
+{
+  "_flywheel_prefix": "共享真实模型配置，包含 chat_model 与 embedding_model；此文件含敏感参数，不应外传。",
+  "chat_model": {
+    "model": "gpt-5.4-nano",
+    "provider": "openai",
+    "base_url": "https://aiyjg.lol/v1",
+    "api_key": "sk-91epmrpO9HiULrSyNULQG9em2iiP8cLp0vrRvIBqbF9kxtet"
+  },
+  "embedding_model": {
+    "model": "text-embedding-3-small",
+    "provider": "openai",
+    "base_url": "https://aiyjg.lol/v1",
+    "api_key": "sk-91epmrpO9HiULrSyNULQG9em2iiP8cLp0vrRvIBqbF9kxtet",
+    "dimensions": 1536
+  }
+}

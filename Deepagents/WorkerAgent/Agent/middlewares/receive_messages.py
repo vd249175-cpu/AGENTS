@@ -1,3 +1,5 @@
+"""Single-file receive-messages middleware following the demo wrapper pattern."""
+
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -5,24 +7,55 @@ from typing import Any
 from langchain.agents.middleware import AgentState, ExtendedModelResponse, ModelRequest, ModelResponse
 from langchain.agents.middleware.types import ResponseT
 from langchain_core.messages import AIMessage, HumanMessage
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from MainServer.comm import AgentComm
 from MainServer.state import AgentMail
-from Deepagents.WorkerAgent.Agent.middlewares.base import (
-    BaseAgentMiddleware,
-    MiddlewareCapabilityPrompt,
-    MiddlewareRuningConfig,
-    set_named_system_message,
-)
+from ..server.demo_server import set_named_system_message
+from .base import BaseAgentMiddleware, MiddlewareCapabilityPrompt, MiddlewareRuningConfig
 
 
 MIDDLEWARE_DIR = Path(__file__).resolve().parent
 
 
-def _format_inbox(
-    messages: list[AgentMail],
-) -> str:
+class Config(MiddlewareRuningConfig):
+    guidancePrompt: str = Field(
+        default="当收到 `<Inbox>` 用户消息时，先阅读内容，再决定是否回复、委派或继续当前任务。"
+    )
+    maxInboxItems: int = Field(default=20, ge=1)
+    peekPeersInGuidance: bool = Field(default=True)
+
+    @classmethod
+    def load_config_receive_messages(cls, source=None):
+        return cls.load(source)
+
+
+ReceiveMessagesRuningConfig = Config
+
+
+class SubState(AgentState, total=False):
+    receiveMessagesLastCount: int
+
+
+MiddlewareStateTydict = SubState
+
+
+class MiddlewareSchema:
+    name = "receive_messages"
+    tools = {}
+    state_schema = SubState
+
+
+middleware_runingconfig = Config.load_config_receive_messages(MIDDLEWARE_DIR / "receive_messages_config.json")
+middleware_capability_prompts = [
+    MiddlewareCapabilityPrompt(
+        name="middleware.receive_messages.guidance",
+        prompt=middleware_runingconfig.guidancePrompt,
+    )
+]
+
+
+def _format_inbox(messages: list[AgentMail]) -> str:
     if not messages:
         return ""
     lines = ["<Inbox>"]
@@ -35,35 +68,9 @@ def _format_inbox(
     return "\n".join(lines)
 
 
-class MiddlewareStateTydict(AgentState, total=False):
-    receiveMessagesLastCount: int
-
-
-class ReceiveMessagesRuningConfig(MiddlewareRuningConfig):
-    guidancePrompt: str = Field(
-        default="当收到 `<Inbox>` 用户消息时，先阅读内容，再决定是否回复、委派或继续当前任务。"
-    )
-    maxInboxItems: int = Field(default=20, ge=1)
-    peekPeersInGuidance: bool = Field(default=True)
-
-
-MiddlewareCapabilityPromptSc = MiddlewareCapabilityPrompt
-
-middleware_runingconfig = ReceiveMessagesRuningConfig.load(
-    MIDDLEWARE_DIR / "receive_messages_config.json"
-)
-middleware_capability_prompts = [
-    MiddlewareCapabilityPromptSc(
-        name="middleware.receive_messages.guidance",
-        prompt=middleware_runingconfig.guidancePrompt,
-    )
-]
-MiddlewareToolConfig = {"tools": {}, "toolStateTydicts": {}}
-
-
-class ReceiveMessagesMiddleware(BaseAgentMiddleware):
-    name = "receive_messages"
-    state_schema = MiddlewareStateTydict
+class Middleware(BaseAgentMiddleware):
+    name = MiddlewareSchema.name
+    state_schema = SubState
     tools = []
 
     def __init__(
@@ -122,3 +129,22 @@ class ReceiveMessagesMiddleware(BaseAgentMiddleware):
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[ResponseT]]],
     ) -> ModelResponse[ResponseT] | AIMessage | ExtendedModelResponse[ResponseT]:
         return await handler(self._with_inbox(self._guidance_request(request)))
+
+
+class ReceiveMessagesMiddleware:
+    name = MiddlewareSchema.name
+    config = Config
+    substate = SubState
+    middlewareschema = MiddlewareSchema
+
+    def __init__(
+        self,
+        *,
+        comm: AgentComm | None = None,
+        runingConfig: ReceiveMessagesRuningConfig | None = None,
+    ) -> None:
+        self.config = runingConfig or middleware_runingconfig
+        self.middleware = Middleware(comm=comm, runingConfig=self.config)
+
+
+receive_messages_middleware = ReceiveMessagesMiddleware().middleware

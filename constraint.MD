@@ -7,10 +7,11 @@
 `middlewares/`、`tools/`、`server/` 这套新结构，不再使用旧的
 `Capabilities/` 作为目标目录。
 
-本轮暂时不迁移旧记忆系统。旧项目中的 `MemoryManage/*`、RAG、索引构建、
-记忆召回等内容先不进入本轮骨架；但可以接入 deepagents 自带的
-`MemoryMiddleware` 与 `SkillsMiddleware`，分别读取 `workspace/brain/AGENTS.md`
-和 `workspace/skills/*/SKILL.md`。
+当前不直接迁移旧项目中的 `MemoryManage/*`、RAG、索引构建、记忆召回等历史实现。
+记忆能力通过复制到当前项目的 `memory/` 包接入，优先使用它的 demo 风格公开入口：
+`ChunkApplyTool` 和 `KnowledgeManagerCapabilityMiddleware`。主 agent 仍可接入
+deepagents 自带的 `MemoryMiddleware` 与 `SkillsMiddleware`，分别读取
+`workspace/brain/AGENTS.md` 和 `workspace/skills/*/SKILL.md`。
 
 ---
 
@@ -163,6 +164,10 @@ CollaborationState       # {"agentcard", "agent_messages"}
 - `send_message_to_agent` 同时负责发送普通信息和任务信息：`msgType="message"` 发送文本，`msgType="task"` 发送 `TaskInfo`。
 - 附件通过 `attachments: list[Link]` 发送。工具入口中，本地文件路径必须以 `/workspace` 开头，工具会转换为当前 Agent workspace 下的宿主机路径；网络 URL 可直接传。
 - 接收方 workspace 相对位置固定为 `Deepagents/<agent_name>/workspace`，MainServer 不依赖注册 payload 中的 workspace 字段。
+- 浏览器自动化是 agent 侧能力，不是 Codex 自身能力；它通过 `workspace/skills/agent-browser/SKILL.md` 接入，Docker sandbox 提供 `agent-browser` + `/usr/bin/chromium`，真实流程由 CLI 的 `skills get core` 提供。
+- SeedAgent 记忆能力通过 `memory/` 包接入：`ingest_knowledge_document` 将
+  `/workspace/knowledge/...` 文件切分写入记忆图，`manage_knowledge` 管理、查询、
+  修正和关联记忆内容。
 
 ### 5.3 注册链路
 
@@ -227,11 +232,21 @@ middleware 文件内部推荐统一维护：
 - `MiddlewareStateTydict`
 - middleware class
 
+当前 demo 重构补充约束：
+
+- middleware / tool / nested agent 按 `Config` / `SubState` / `Schema`
+  / helper / wrapper / default entry 组织。
+- 共享的 demo 级配置加载、named system message、stream emit、计数更新 helper
+  放在 `Agent/server/demo_server.py`。
+- 外层 wrapper 只负责持有当前配置和装配结果；真正挂载到 agent 上的是标准
+  middleware / tool 对象。
+- 上层 agent 在创建中间键时要把同一份 `context` 继续向下透传。
+
 ### 6.2 tool
 
 - tool 文件优先单文件结构。
 - middleware、tool 和 agent 装配文件开头不要使用 `from __future__ import annotations`；公共协议文件允许使用它来表达新 TypedDict 协议。
-- 声明 `ToolInputSm`、`ToolDescriptionSc`、`ToolReturnSc`、`ToolStateTydict`、`ToolRuningConfigSc`。
+- 声明 `Config`、`SubState`、`ToolInputSm`、`ToolDescriptionSc`、`ToolReturnSc`、`ToolStateTydict`、`ToolRuningConfigSc`。
 - 工具函数签名保留 `runtime: ToolRuntime`。
 - 工具只从 `runtime.state / runtime.stream_writer / runtime.tool_call_id` 读取运行时信息。
 - 工具返回 `Command(update=...)`，并在 `update["messages"]` 中包含 `ToolMessage`。

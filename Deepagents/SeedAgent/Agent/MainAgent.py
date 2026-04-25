@@ -17,8 +17,11 @@ from .middlewares import (
     ReceiveMessagesMiddleware,
     SendMessagesMiddleware,
 )
+from .server.memory_bridge import build_knowledge_manager_middleware
 from .server.path_resolver import STORE_ROOT, WORKSPACE_ROOT, ensure_seed_workspace
 from .sandbox import get_seed_agent_sandbox
+from .tools.ingest_knowledge_tool import Config as IngestKnowledgeToolConfig
+from .tools.ingest_knowledge_tool import IngestKnowledgeTool
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,11 +34,13 @@ class AgentSpec:
 
 AGENT_SPEC = AgentSpec(
     name="SeedAgent",
-    role="seed agent",
-    description="负责验证新框架骨架、跨 Agent 通讯和工具/middleware 流式链路。",
+    role="knowledge seed agent",
+    description="负责把 knowledge 中的长文档切分进入记忆图，并通过记忆管理工具维护知识库。",
     responsibilities=(
         "组织当前会话的任务步骤",
         "通过 MainServer 与其他 Agent 通讯",
+        "将 workspace/knowledge 中的长文档切分并写入记忆",
+        "使用 manage_knowledge 查询、整理、修正和关联记忆图内容",
         "以流式事件汇报关键执行过程",
         "使用 middleware 自动挂载的工具，不在 agent 装配层重复挂 tools",
     ),
@@ -124,6 +129,7 @@ def build_context_backend() -> FilesystemBackend:
 
 def build_middlewares(*, comm: AgentComm | None, debug: bool) -> list[Any]:
     context_backend = build_context_backend()
+    agent_name = runtime_agent_name()
     middlewares: list[Any] = [
         MemoryMiddleware(
             backend=context_backend,
@@ -133,13 +139,22 @@ def build_middlewares(*, comm: AgentComm | None, debug: bool) -> list[Any]:
             backend=context_backend,
             sources=["/skills"],
         ),
-        ReceiveMessagesMiddleware(comm=comm),
-        SendMessagesMiddleware(comm=comm),
-        AgentStepTraceMiddleware(),
+        build_knowledge_manager_middleware(agent_name=agent_name).middleware,
+        ReceiveMessagesMiddleware(comm=comm).middleware,
+        SendMessagesMiddleware(comm=comm).middleware,
+        AgentStepTraceMiddleware().middleware,
     ]
     if debug:
-        middlewares.append(DebugTraceMiddleware())
+        middlewares.append(DebugTraceMiddleware().middleware)
     return middlewares
+
+
+def build_tools() -> list[Any]:
+    return [
+        IngestKnowledgeTool(
+            config=IngestKnowledgeToolConfig(agentName=runtime_agent_name())
+        ).tool
+    ]
 
 
 async def _build_main_agent_async(
@@ -159,6 +174,7 @@ async def _build_main_agent_async(
     deep_agent = create_deep_agent(
         model=model,
         backend=backend,
+        tools=build_tools(),
         middleware=build_middlewares(comm=comm, debug=debug),
         system_prompt=render_system_prompt(),
         name=agent_name,

@@ -1,0 +1,37 @@
+{
+  "identity": {
+    "base_run_id": "chunk-run",
+    "base_thread_id": "chunk-thread"
+  },
+  "public": {
+    "neo4j": {
+      "uri": "neo4j://localhost:7687",
+      "username": "neo4j",
+      "password": "1575338771",
+      "database": null
+    },
+    "checkpoint_path": "store/checkpoint/chunk_checkpoint.sqlite3"
+  },
+  "runtime": {
+    "resume": true,
+    "cache_path": "store/cache/chunk_cache.sqlite3",
+    "staging_path": "store/staging/chunk_staging.sqlite3",
+    "recursion_limit": null,
+    "shard_count": 4,
+    "reference_bytes": 6000,
+    "max_retries": 3,
+    "max_workers": 2
+  },
+  "chunking": {
+    "history_line_count": 4,
+    "active_line_count": 8,
+    "preview_line_count": 4,
+    "line_wrap_width": 30,
+    "window_back_bytes": 1200,
+    "window_forward_bytes": 2400,
+    "trace_limit": 16,
+    "max_retries": 3
+  },
+  "document_edge_distance": 0.3,
+  "persist_keyword_embeddings": true
+}

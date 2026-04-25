@@ -1,0 +1,27 @@
+{
+  "neo4j": {
+    "uri": "neo4j://localhost:7687",
+    "username": "neo4j",
+    "password": "1575338771",
+    "database": null
+  },
+  "run_id": null,
+  "trace_limit": 16,
+  "tool": {
+    "temperature": 0.0,
+    "debug": false,
+    "stream_inner_agent": false,
+    "inner_recursion_limit": 64,
+    "agent_overrides": {
+      "model": {},
+      "embedding": {},
+      "discovery": {},
+      "document_query": {},
+      "document_write": {},
+      "graph_query": {
+        "capability_preset": {}
+      },
+      "graph_write": {}
+    }
+  }
+}
