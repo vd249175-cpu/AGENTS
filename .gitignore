@@ -6,6 +6,8 @@ __pycache__/
 
 # Local model credentials
 Deepagents/*/Agent/Models/model_config.json
+Deepagents/*/Agent/SeedAgentConfig.local.json
+MainServer/config/agents.local.json
 
 # C extensions
 *.so

@@ -8,6 +8,7 @@ import urllib.request
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from Deepagents.SeedAgent.Agent.MainAgent import (
     AGENT_SPEC,
+    Config as SeedAgentConfig,
     WORKSPACE_ROOT,
     SeedMainAgent,
     abuild_main_agent,
@@ -57,6 +59,46 @@ def _post_json(url: str, payload: dict[str, Any], timeout: float = 5.0) -> dict[
 
 
 STREAM_TYPES = {"messages", "updates", "custom"}
+AGENT_SERVER_ROOT = Path(__file__).resolve().parent
+DEFAULT_SERVICE_CONFIG = AGENT_SERVER_ROOT / "ServiceConfig.json"
+
+
+def _env_prefix(agent_name: str) -> str:
+    chars: list[str] = []
+    for index, char in enumerate(agent_name):
+        if char.isupper() and index > 0:
+            chars.append("_")
+        chars.append(char.upper())
+    return "".join(chars)
+
+
+class ServiceConfig(BaseModel):
+    agent_name: str = Field(default=AGENT_SPEC.name)
+    host: str = Field(default="127.0.0.1")
+    port: int = Field(default=8010, ge=1, le=65535)
+    main_server_url: str = Field(default="http://127.0.0.1:8000")
+
+
+def load_service_config(source: str | Path | None = None) -> ServiceConfig:
+    raw_source = source or os.getenv("LANGVIDEO_AGENT_SERVICE_CONFIG") or DEFAULT_SERVICE_CONFIG
+    path = Path(raw_source).expanduser()
+    data: dict[str, Any] = {}
+    if path.exists():
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError(f"Invalid service config: {path}")
+        data.update(loaded)
+
+    prefix = _env_prefix(str(data.get("agent_name", AGENT_SPEC.name)))
+    env_host_key = f"{prefix}_HOST"
+    env_port_key = f"{prefix}_PORT"
+    data["agent_name"] = os.getenv("AGENT_NAME") or data.get("agent_name", AGENT_SPEC.name)
+    data["host"] = os.getenv(env_host_key) or os.getenv("AGENT_HOST") or data.get("host", "127.0.0.1")
+    data["port"] = int(os.getenv(env_port_key) or os.getenv("AGENT_PORT") or data.get("port", 8010))
+    data["main_server_url"] = os.getenv("MAIN_SERVER_URL") or data.get(
+        "main_server_url", "http://127.0.0.1:8000"
+    )
+    return ServiceConfig.model_validate(data)
 
 
 class InvokeRequest(BaseModel):
@@ -152,7 +194,7 @@ class AgentObserver:
         self,
         main_server_url: str,
         agent_name: str | None = None,
-        scope: list[str] | None = None,
+        scope: Any = None,
     ) -> None:
         self.agent_name = agent_name or os.getenv("AGENT_NAME") or AGENT_SPEC.name
         self.host = socket.gethostname()
@@ -321,17 +363,22 @@ def _guess_step(chunk_type: str, data: Any) -> str | None:
     return None
 
 
-def _parse_scope() -> list[str] | None:
+def _parse_scope() -> Any:
     raw = os.getenv("AGENT_SCOPE")
     if not raw:
         return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def create_app(scope: list[str] | None = None) -> FastAPI:
+def create_app(scope: Any = None) -> FastAPI:
+    service_config = load_service_config()
     resolved_scope = scope if scope is not None else _parse_scope()
-    main_server_url = os.getenv("MAIN_SERVER_URL", "http://127.0.0.1:8000")
-    observer = AgentObserver(main_server_url, scope=resolved_scope)
+    main_server_url = service_config.main_server_url
+    observer = AgentObserver(main_server_url, agent_name=service_config.agent_name, scope=resolved_scope)
 
     def _sync_exception_hook(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
         payload = {
@@ -367,7 +414,10 @@ def create_app(scope: list[str] | None = None) -> FastAPI:
         asyncio.get_event_loop().set_exception_handler(_loop_exception_handler)
         app.state.runtime = SeedAgentRuntime()
         app.state.comm = AgentComm(main_server_url, observer.agent_name)
-        app.state.runtime.main_agent = await abuild_main_agent(comm=app.state.comm)
+        agent_config = SeedAgentConfig.load_config_seed_agent()
+        if agent_config.agentName != observer.agent_name:
+            agent_config = agent_config.model_copy(update={"agentName": observer.agent_name})
+        app.state.runtime.main_agent = await abuild_main_agent(comm=app.state.comm, config=agent_config)
         await observer.register()
         await observer.set_status("running", phase="startup", step="ready")
         try:
@@ -378,11 +428,11 @@ def create_app(scope: list[str] | None = None) -> FastAPI:
             await observer.set_status("stopped", phase="shutdown", step="done")
             await observer.stop()
 
-    app = FastAPI(title=f"{AGENT_SPEC.name} Service", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title=f"{observer.agent_name} Service", version="1.0.0", lifespan=lifespan)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
-        return {"status": "ok", "time": _now(), "agent": AGENT_SPEC.name}
+        return {"status": "ok", "time": _now(), "agent": observer.agent_name}
 
     @app.get("/status")
     async def status() -> dict[str, Any]:
@@ -480,10 +530,11 @@ app = create_app()
 def main() -> int:
     import uvicorn
 
+    service_config = load_service_config()
     uvicorn.run(
         "Deepagents.SeedAgent.AgentServer.service:app",
-        host=os.getenv("SEED_AGENT_HOST", "127.0.0.1"),
-        port=int(os.getenv("SEED_AGENT_PORT", "8010")),
+        host=service_config.host,
+        port=service_config.port,
         reload=False,
         access_log=False,
     )

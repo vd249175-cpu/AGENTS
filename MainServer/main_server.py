@@ -6,6 +6,17 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from MainServer.admin_config import (
+    configured_scope,
+    get_agent_config,
+    load_config,
+    replace_agent_config,
+    resolve_scope,
+    save_config,
+    scope_allows,
+    update_agent_config,
+)
+from MainServer.agent_templates import create_agent_from_template
 from MainServer.mail_router import route_message_assets
 from MainServer.state import AgentMail, MessageType
 
@@ -46,7 +57,7 @@ class AgentRegistration(BaseModel):
     host: str | None = None
     pid: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-    scope: list[str] | None = None
+    scope: Any = None
 
 
 class AgentStatusUpdate(BaseModel):
@@ -79,6 +90,18 @@ class AgentErrorReport(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class AgentScopeUpdate(BaseModel):
+    scope: Any = None
+
+
+class CreateAgentRequest(BaseModel):
+    agent_name: str
+    source_agent: str = "SeedAgent"
+    overwrite: bool = False
+    config: dict[str, Any] = Field(default_factory=dict)
+    scope: Any = None
+
+
 @dataclass
 class AgentRecord:
     agent_name: str
@@ -94,7 +117,7 @@ class AgentRecord:
     registered_at: datetime = field(default_factory=_now)
     updated_at: datetime = field(default_factory=_now)
     events: list[dict[str, Any]] = field(default_factory=list)
-    scope: list[str] | None = None
+    scope: Any = None
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -112,6 +135,7 @@ class AgentRecord:
             "updated_at": _iso(self.updated_at),
             "events": [_jsonable(event) for event in self.events],
             "scope": self.scope,
+            "resolved_scope": resolve_scope(self.scope),
             "workspace": str(agent_workspace(self.agent_name)),
         }
 
@@ -171,17 +195,20 @@ async def get_agent(agent_name: str) -> dict[str, Any]:
 @app.post("/agents/register")
 async def register_agent(payload: AgentRegistration) -> dict[str, Any]:
     record = _get_or_create(payload.agent_name)
+    has_configured_scope, config_scope = configured_scope(payload.agent_name)
     record.host = payload.host or record.host
     record.pid = payload.pid or record.pid
     record.metadata.update(_jsonable(payload.metadata))
-    record.scope = payload.scope
+    record.scope = config_scope if has_configured_scope else payload.scope
     record.status = "registered"
     _append_event(
         record,
         {
             "event": "register",
             "agent_name": record.agent_name,
-            "scope": payload.scope,
+            "scope": record.scope,
+            "scope_source": "mainserver_config" if has_configured_scope else "registration",
+            "resolved_scope": resolve_scope(record.scope),
             "workspace": str(agent_workspace(payload.agent_name)),
             "metadata": _jsonable(payload.metadata),
             "at": _iso(),
@@ -269,15 +296,16 @@ async def agent_peers(agent_name: str) -> dict[str, Any]:
     record = _registry.get(agent_name)
     if record is None:
         raise HTTPException(status_code=404, detail="agent not found")
-    if record.scope is None:
+    resolved_scope = resolve_scope(record.scope)
+    if resolved_scope is None:
         peers = [registered_name for registered_name in _registry if registered_name != agent_name]
     else:
         peers = [
             registered_name
-            for registered_name in record.scope
+            for registered_name in resolved_scope
             if registered_name in _registry and registered_name != agent_name
         ]
-    return {"agent_name": agent_name, "peers": peers}
+    return {"agent_name": agent_name, "peers": peers, "scope": record.scope, "resolved_scope": resolved_scope}
 
 
 class SendRequest(BaseModel):
@@ -305,7 +333,7 @@ async def send_message(payload: SendRequest) -> dict[str, Any]:
         "attachments": payload.attachments,
     }
 
-    if sender_scope is not None and payload.to not in sender_scope:
+    if not scope_allows(sender_scope, payload.to):
         raise HTTPException(status_code=403, detail=f"agent '{payload.to}' is not in sender scope")
     routed = route_message_assets(message, str(agent_workspace(payload.to)))
     _mailboxes.setdefault(payload.to, []).append(routed)
@@ -318,6 +346,116 @@ async def recv_messages(agent_name: str) -> dict[str, Any]:
     record = _registry.get(agent_name)
     receiver_scope = record.scope if record else None
     messages = _mailboxes.pop(agent_name, [])
-    if receiver_scope is not None:
-        messages = [message for message in messages if message.get("from") in receiver_scope]
+    if resolve_scope(receiver_scope) is not None:
+        messages = [message for message in messages if scope_allows(receiver_scope, str(message.get("from") or ""))]
     return {"agent_name": agent_name, "messages": messages}
+
+
+@app.get("/admin/agents/config")
+async def admin_get_agents_config() -> dict[str, Any]:
+    return load_config()
+
+
+@app.post("/admin/agents/create")
+async def admin_create_agent(payload: CreateAgentRequest) -> dict[str, Any]:
+    try:
+        result = create_agent_from_template(
+            agent_name=payload.agent_name,
+            source_agent=payload.source_agent,
+            overwrite=payload.overwrite,
+        )
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    config_patch = dict(payload.config)
+    config_patch.setdefault("template", payload.source_agent)
+    if payload.scope is not None or "scope" not in config_patch:
+        config_patch["scope"] = payload.scope
+    config = update_agent_config(payload.agent_name, config_patch)
+    return {"ok": True, "agent": result, "config": config}
+
+
+@app.put("/admin/agents/config")
+async def admin_replace_agents_config(payload: dict[str, Any]) -> dict[str, Any]:
+    return save_config(payload)
+
+
+@app.get("/admin/agents/{agent_name}/config")
+async def admin_get_agent_config(agent_name: str) -> dict[str, Any]:
+    return {
+        "agent_name": agent_name,
+        "config": get_agent_config(agent_name),
+        "registered": _registry.get(agent_name).snapshot() if agent_name in _registry else None,
+    }
+
+
+@app.patch("/admin/agents/{agent_name}/config")
+async def admin_patch_agent_config(agent_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    config = update_agent_config(agent_name, payload)
+    record = _registry.get(agent_name)
+    if record is not None and "scope" in payload:
+        record.scope = payload.get("scope")
+        _append_event(
+            record,
+            {
+                "event": "scope_update",
+                "scope": record.scope,
+                "resolved_scope": resolve_scope(record.scope),
+                "source": "mainserver_config",
+                "at": _iso(),
+            },
+        )
+    return {"ok": True, "agent_name": agent_name, "config": config}
+
+
+@app.put("/admin/agents/{agent_name}/config")
+async def admin_replace_agent_config(agent_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    config = replace_agent_config(agent_name, payload)
+    record = _registry.get(agent_name)
+    if record is not None and "scope" in config:
+        record.scope = config.get("scope")
+    return {"ok": True, "agent_name": agent_name, "config": config}
+
+
+@app.get("/admin/agents/{agent_name}/scope")
+async def admin_get_agent_scope(agent_name: str) -> dict[str, Any]:
+    record = _registry.get(agent_name)
+    if record is not None:
+        scope = record.scope
+        source = "registry"
+    else:
+        has_configured_scope, scope = configured_scope(agent_name)
+        source = "mainserver_config" if has_configured_scope else "default_all"
+    return {
+        "agent_name": agent_name,
+        "scope": scope,
+        "resolved_scope": resolve_scope(scope),
+        "source": source,
+    }
+
+
+@app.put("/admin/agents/{agent_name}/scope")
+async def admin_set_agent_scope(agent_name: str, payload: AgentScopeUpdate) -> dict[str, Any]:
+    config = update_agent_config(agent_name, {"scope": payload.scope})
+    record = _registry.get(agent_name)
+    if record is not None:
+        record.scope = payload.scope
+        _append_event(
+            record,
+            {
+                "event": "scope_update",
+                "scope": payload.scope,
+                "resolved_scope": resolve_scope(payload.scope),
+                "source": "mainserver_config",
+                "at": _iso(),
+            },
+        )
+    return {
+        "ok": True,
+        "agent_name": agent_name,
+        "config": config,
+        "scope": payload.scope,
+        "resolved_scope": resolve_scope(payload.scope),
+    }

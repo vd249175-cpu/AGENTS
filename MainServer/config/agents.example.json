@@ -1,0 +1,9 @@
+{
+  "agents": {
+    "SeedAgent": {
+      "enabled": true,
+      "scope": null,
+      "template": "SeedAgent"
+    }
+  }
+}

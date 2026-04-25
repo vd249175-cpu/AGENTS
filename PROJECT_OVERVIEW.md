@@ -32,6 +32,7 @@ LANGVIDEO/
 │       ├── store/
 │       ├── server/
 │       ├── MainAgent.py
+│       ├── SeedAgentConfig.example.json
 │       ├── protocol.py
 │       └── sandbox.py
 ├── MainServer/
@@ -50,13 +51,20 @@ LANGVIDEO/
 - `Deepagents/SeedAgent/AgentServer/`
   - Layer 1，服务外壳。
   - 负责 FastAPI 生命周期、MainServer 注册、状态上报、异常上报和 stream 事件转发。
+  - `ServiceConfig.json` 管独立服务启动配置，例如 `agent_name`、`host`、`port`、
+    `main_server_url`。
   - 不写业务逻辑，不直接做模型调用。
 
 - `Deepagents/SeedAgent/Agent/`
   - Layer 2，Agent 组装层。
-  - `MainAgent.py` 负责构建主 agent，挂载模型、backend、middleware、checkpoint。
+  - `MainAgent.py` 负责构建主 agent，挂载模型、backend、middleware、checkpoint，
+    并把 `SeedAgentConfig` 作为 context schema 透传给 middleware/tool。
+  - `SeedAgentConfig.local.json` 是完整本地 runtime 配置，包含 chat/embedding/Neo4j
+    凭据、middleware 开关和 tool 参数；它覆盖 `memory/README.md` 推荐公开入口
+    `ChunkApplyTool` 与 `KnowledgeManagerCapabilityMiddleware` 的主要 JSON 配置面。
+    真实本地配置默认不提交；`SeedAgentConfig.example.json` 是可复制模板。
   - `protocol.py` 放通讯/任务层共享契约。
-  - `Models/` 放 `init_chat_model` 模型初始化和 `model_config.json`。
+  - `Models/` 放模型初始化和旧兼容模型配置。
   - `middlewares/` 放中间件和中间件配置 JSON。
   - `tools/` 放 agent 工具和工具配置 JSON。
   - `server/` 放 Agent 内部可复用逻辑和声明。
@@ -68,6 +76,12 @@ LANGVIDEO/
   - Agent 端只通过 `AgentComm` 通讯，不直接 HTTP 请求 MainServer。
   - Agent 身份只使用 `agent_name`；`AgentMail.type="task"` 只是另一种消息格式。
   - 附件使用 `Link`，工具内本地文件路径必须以 `/workspace` 开头，网络 URL 可直接传。
+  - agent 发现和通讯 scope 由 MainServer 中心配置管理；默认本地配置是
+    `MainServer/config/agents.local.json`，示例为 `MainServer/config/agents.example.json`。
+  - scope 可以是 `None`、扁平 agent name 列表，也可以是嵌套列表；MainServer
+    保存原始结构，路由判断时递归解析出可达 agent name。
+  - 后端管理接口支持读取/修改中心配置、读取/修改单个 agent scope，并从
+    `SeedAgent` 模板复制创建新 agent 目录。
 - `workspace/skills/agent-browser/SKILL.md`
   - agent 侧浏览器自动化入口。
   - 只是 discovery stub，真正的浏览器流程由 `agent-browser skills get core` 提供。
@@ -82,6 +96,9 @@ LANGVIDEO/
 - middleware、tool 和 agent 装配文件开头不要使用 `from __future__ import annotations`；公共协议文件可使用它来表达新 TypedDict 协议。
 - `runtime: ToolRuntime` 和 middleware hook 的真实类型要保持可见。
 - 工具由 middleware 自动注册，不要在 `create_agent(...)` 里重复传同一批 tools。
+- 顶层 agent 不维护自由的 `enabledTools` 列表；启用 middleware 后由该 middleware
+  挂载自己的工具。
+- `ingest_knowledge_document` 由 `KnowledgeIngestMiddleware` 挂载。
 - 相同的一组 tool，尤其是共享统一 state 的 tool，应由同一个 middleware 统一挂载。
 - system message 使用稳定的 `name` 做能力 slot。
 - tool 返回 `Command(update=...)`，并在 `update["messages"]` 中放 `ToolMessage`。

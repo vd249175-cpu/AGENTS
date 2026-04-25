@@ -29,6 +29,9 @@ LANGVIDEO/
 │   ├── protocol.py              # 消息构造工具
 │   ├── comm.py                  # Agent 端通讯 SDK
 │   ├── mail_router.py           # 附件/邮件资产路由
+│   ├── admin_config.py          # MainServer 本地 agent/discovery 配置读写
+│   ├── agent_templates.py       # 从 SeedAgent 模板复制创建新 Agent
+│   ├── config/                  # 本地运行配置示例；真实本地配置默认不提交
 │   └── test_comm.py             # 通讯链路端到端验证
 ├── tests/                       # 单元测试、集成测试、真实模型流式测试
 ├── main.py                      # 本地运行入口
@@ -62,6 +65,7 @@ SeedAgent/
 ├── Agent/                        # Layer 2：Agent 组装
 │   ├── __init__.py
 │   ├── MainAgent.py              # 主 agent 构建
+│   ├── SeedAgentConfig.example.json # agent runtime 完整配置示例
 │   ├── protocol.py               # 通讯/任务层共享契约
 │   ├── Models/                   # init_chat_model 模型 + JSON 模型配置
 │   ├── SubAgent/                 # 工具或 middleware 中会用到的 agent
@@ -98,6 +102,9 @@ MainServer/
 ├── protocol.py        # make_message：消息构造
 ├── comm.py            # AgentComm：Agent 端通讯 SDK
 ├── mail_router.py     # 附件/邮件资产路由
+├── admin_config.py    # MainServer 本地 agent/discovery 配置读写
+├── agent_templates.py # 从 SeedAgent 模板复制创建新 Agent
+├── config/            # 本地配置示例；agents.local.json 默认不提交
 └── test_comm.py       # 通讯链路端到端验证
 ```
 
@@ -107,6 +114,8 @@ MainServer/
 | `protocol.py` | `make_message()`，构造标准 `AgentMail` | 只负责消息构造，不发送 |
 | `comm.py` | `AgentComm` 类，提供 `send / recv / peers` | 纯 SDK，不持有状态，不引入 `requests` / `httpx` |
 | `mail_router.py` | 路由本地附件到接收方 workspace | 不下载网络资源，不执行 Agent 任务 |
+| `admin_config.py` | 读取和写入 MainServer 本地 agent/discovery 配置 | 不导入 Agent 运行时，不保存模型凭据 |
+| `agent_templates.py` | 从 SeedAgent 模板复制创建新 Agent 目录 | 不启动模型，不改已有 Agent，除非显式 overwrite |
 | `main_server.py` | FastAPI 应用，注册、状态更新、事件收集、消息路由 | 不持有 Agent 运行时，不做任务执行 |
 
 ---
@@ -184,22 +193,37 @@ Agent 启动
 ### 5.4 Scope 管道限制
 
 scope 由 MainServer 管理，Agent 不在本地私自声明全局可达性。
+MainServer 默认读取 `MainServer/config/agents.local.json`，该文件是本地运行配置，
+不提交；可通过 `MAIN_SERVER_AGENT_CONFIG` 指向其他配置文件。
+仓库只保留 `MainServer/config/agents.example.json` 作为示例。
 
 ```python
 # scope=None 表示全部可达
 # scope=[] 表示与谁都不能通讯
 # scope=["agent-b", "agent-c"] 表示只能和指定 agent 通讯
+# scope=[[], "agent-b", ["agent-c", []]] 这类嵌套结构会保留原始形态，
+# 路由判断时递归解析出其中的 agent name。
 ```
 
 Scope 影响三个维度：
 
 | 维度 | 规则 |
 |---|---|
+| 注册 | 注册 payload 可带兼容 scope，但若 MainServer 本地配置中存在该 agent 的 scope，则以 MainServer 配置为准 |
 | 发送 | 发送方只能向自己 scope 内的 agent 发消息；scope 外目标返回 403 |
 | 接收 | 接收方只保留来自自己 scope 内的消息；scope 外来源被过滤 |
 | 发现 | `GET /agents/peers/{agent_name}` 只返回 scope 内已注册 agent，且不包含自己 |
 
 `/agents/online` 不受 scope 影响，仍返回全局列表，作为管理员视角。
+
+MainServer 后端管理接口：
+
+| 端点 | 方法 | 描述 |
+|---|---|---|
+| `/admin/agents/config` | `GET/PUT` | 读取或替换中心 agent/discovery 配置 |
+| `/admin/agents/create` | `POST` | 从 `SeedAgent` 或指定模板复制创建新 Agent 目录，并写入中心配置 |
+| `/admin/agents/{agent_name}/config` | `GET/PATCH/PUT` | 读取、合并或替换单个 Agent 的配置 |
+| `/admin/agents/{agent_name}/scope` | `GET/PUT` | 读取或替换单个 Agent 的原始 scope，并返回解析后的可达 agent |
 
 ---
 
@@ -218,6 +242,9 @@ Scope 影响三个维度：
 - 使用命名 `SystemMessage.name` 作为能力 slot。
 - middleware hook 的真实类型要保持可见。
 - 中间件内部网络错误等应 fail-silent，不阻断 Agent 主链路。
+- 顶层 agent 不维护自由的 `enabledTools` 列表；工具由所属 middleware 挂载。
+- `ingest_knowledge_document` 由 `KnowledgeIngestMiddleware` 挂载，不在
+  `create_deep_agent(...)` 的 `tools=` 中重复传入。
 - 当前主 agent 除自定义 middleware 外，还应接入 deepagents 内置：
   - `MemoryMiddleware`：读取 `workspace/brain/AGENTS.md`
   - `SkillsMiddleware`：读取 `workspace/skills/*/SKILL.md`
@@ -283,17 +310,37 @@ ReceiveMessagesMiddleware
 
 ## 7. 模型配置约束
 
-模型配置放在 `Deepagents/*/Agent/Models/`。
+Agent runtime 完整配置放在 `Deepagents/*/Agent/SeedAgentConfig.local.json`，
+示例为 `SeedAgentConfig.example.json`。该配置包含：
+
+- agent 身份、角色、职责和补充系统提示词。
+- chat model、embedding model、API key、base URL。
+- Neo4j URI、用户名、密码和 database。
+- middleware 开关。
+- middleware 所属 tool 的参数，例如 `send_message_to_agent` 默认目标和
+  `ingest_knowledge_document` 分片参数。
+- `memory/README.md` 中两个公开入口的配置面：
+  `tools.ChunkApplyTool` 的 identity/public/runtime/chunking/document edge/keyword embedding
+  参数，以及 `middleware.KnowledgeManagerCapabilityMiddleware` 的 trace、内部 manager、
+  discovery、document query/write、graph query/write 和 graph query preset 参数。
+
+`SeedAgentConfig.local.json` 包含本地凭据，默认不提交。`AgentServer/ServiceConfig.json`
+只保存独立服务配置，例如 `agent_name`、`host`、`port`、`main_server_url`。
+
+旧模型配置放在 `Deepagents/*/Agent/Models/`，只作为兼容配置保留。
 
 当前骨架至少包含：
 
 | 配置文件 | 消费方 | 用途 |
 |---|---|---|
-| `model_config.json` | MainAgent | 主 agent 模型，使用 `chat_model` / `embedding_model` 结构 |
-| `AgentApi.json` | MainAgent | 旧兼容配置，仅在 `model_config.json` 不存在时回退 |
+| `SeedAgentConfig.local.json` | MainAgent / memory bridge | agent runtime 完整本地配置，默认不提交 |
+| `SeedAgentConfig.example.json` | MainAgent / template | agent runtime 完整配置示例 |
+| `model_config.json` | 旧兼容 | 旧主 agent 模型结构 |
+| `AgentApi.json` | 旧兼容 | 旧 MainAgent API 配置 |
 | `ToolModel.json` | tools / SubAgent | 工具或子 agent 可选模型 |
 
-记忆系统暂不迁移，因此本轮不要求 `MemoryAgent.json`、`FlatRag.json`。
+当前不迁入旧项目的 `MemoryManage/*`、RAG、索引构建和记忆召回历史实现；
+记忆能力通过 `memory/README.md` 推荐的两个公开入口接入。
 
 ---
 

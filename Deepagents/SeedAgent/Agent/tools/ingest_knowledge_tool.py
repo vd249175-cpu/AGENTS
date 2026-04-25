@@ -23,6 +23,10 @@ class Config(StrictConfig):
     agentName: str = Field(default="SeedAgent", description="Agent name used for memory run identity.")
 
 
+def _context_value(context: Any, fallback: Config, key: str) -> Any:
+    return getattr(context, key, getattr(fallback, key))
+
+
 class SubState(AgentState, total=False):
     ingestKnowledgeStats: dict[str, int]
     ingestKnowledgeLastPath: str | None
@@ -93,11 +97,16 @@ class IngestKnowledgeTool:
 
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or Config()
-        self._chunk_apply = build_chunk_apply_tool(agent_name=self.config.agentName)
+        self._chunk_apply = None
         self.tool = self.create_tool()
 
+    def _get_chunk_apply(self):
+        if self._chunk_apply is None:
+            self._chunk_apply = build_chunk_apply_tool(agent_name=self.config.agentName, config=self.config)
+        return self._chunk_apply
+
     def close(self) -> None:
-        close = getattr(self._chunk_apply, "close", None)
+        close = getattr(self._chunk_apply, "close", None) if self._chunk_apply is not None else None
         if callable(close):
             close()
 
@@ -105,7 +114,7 @@ class IngestKnowledgeTool:
         current_config = self.config
         current_toolschema = self.toolschema
         current_feedback_cls = current_toolschema.toolfeedback
-        chunk_apply = self._chunk_apply
+        tool_owner = self
 
         @tool(
             current_toolschema.name,
@@ -122,7 +131,7 @@ class IngestKnowledgeTool:
             referenceBytes: int | None = None,
         ) -> Command:
             feedback = current_feedback_cls()
-            context = runtime.context if isinstance(runtime.context, Config) else current_config
+            context = runtime.context or current_config
             try:
                 host_path = _resolve_knowledge_path(path)
                 emit(
@@ -134,14 +143,14 @@ class IngestKnowledgeTool:
                         "path": str(host_path),
                     },
                 )
-                result = chunk_apply.invoke(
+                result = tool_owner._get_chunk_apply().invoke(
                     {
                         "path": str(host_path),
-                        "resume": context.resume if resume is None else resume,
+                        "resume": _context_value(context, current_config, "resume") if resume is None else resume,
                         "chunking_requirement": chunkingRequirement,
-                        "shard_count": shardCount or context.shardCount,
-                        "max_workers": maxWorkers or context.maxWorkers,
-                        "reference_bytes": referenceBytes or context.referenceBytes,
+                        "shard_count": shardCount or _context_value(context, current_config, "shardCount"),
+                        "max_workers": maxWorkers or _context_value(context, current_config, "maxWorkers"),
+                        "reference_bytes": referenceBytes or _context_value(context, current_config, "referenceBytes"),
                     },
                     stream_writer=runtime.stream_writer,
                 )

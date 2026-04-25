@@ -133,6 +133,35 @@ def build_main_agent_model(
     )
 
 
+def build_main_agent_model_from_config(config: Any) -> Any:
+    provider_name = _normalize_provider(
+        getattr(config, "chatModelProvider", None),
+        default="openai",
+    )
+
+    if provider_name == "ollama":
+        from langchain_ollama import ChatOllama
+
+        return ChatOllama(
+            model=str(getattr(config, "chatModel", None) or "granite4:3b"),
+            base_url=str(getattr(config, "ollamaBaseUrl", None) or "http://127.0.0.1:11434"),
+            temperature=float(getattr(config, "chatTemperature", 0.0)),
+        )
+
+    from langchain_openai import ChatOpenAI
+
+    base_url = str(getattr(config, "chatBaseUrl", "") or "").strip()
+    api_key = str(getattr(config, "chatApiKey", "") or "").strip()
+    if not base_url or not api_key:
+        raise ValueError("SeedAgentConfig must provide chatBaseUrl and chatApiKey for OpenAI-compatible models.")
+    return ChatOpenAI(
+        model=str(getattr(config, "chatModel", None) or "gpt-5-nano"),
+        base_url=base_url,
+        api_key=api_key,
+        temperature=float(getattr(config, "chatTemperature", 0.0)),
+    )
+
+
 def build_model(
     *,
     config_path: Path | None = None,

@@ -1,6 +1,15 @@
 """Model builders for SeedAgent."""
 
-from .runtime import build_main_agent_model, build_model, load_main_agent_model_config
+from .runtime import (
+    build_main_agent_model,
+    build_main_agent_model_from_config,
+    build_model,
+    load_main_agent_model_config,
+)
 
-__all__ = ["build_main_agent_model", "build_model", "load_main_agent_model_config"]
-
+__all__ = [
+    "build_main_agent_model",
+    "build_main_agent_model_from_config",
+    "build_model",
+    "load_main_agent_model_config",
+]
