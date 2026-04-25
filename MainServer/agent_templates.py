@@ -56,6 +56,20 @@ def _rewrite_text_file(path: Path, replacements: dict[str, str]) -> None:
         path.write_text(updated, encoding="utf-8")
 
 
+def _rewrite_path_names(root: Path, replacements: dict[str, str]) -> None:
+    paths = sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True)
+    for path in paths:
+        rewritten_name = path.name
+        for source, target in replacements.items():
+            rewritten_name = rewritten_name.replace(source, target)
+        if rewritten_name == path.name:
+            continue
+        target = path.with_name(rewritten_name)
+        if target.exists():
+            raise FileExistsError(f"cannot rename {path} to {target}: target exists")
+        path.rename(target)
+
+
 def create_agent_from_template(
     *,
     agent_name: str,
@@ -87,6 +101,7 @@ def create_agent_from_template(
     for path in target_root.rglob("*"):
         if path.is_file():
             _rewrite_text_file(path, replacements)
+    _rewrite_path_names(target_root, replacements)
 
     for required in (
         target_root / "workspace" / "brain",
