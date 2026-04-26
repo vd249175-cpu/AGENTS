@@ -1,27 +1,39 @@
 import asyncio
+import os
+import socket
+import subprocess
 import urllib.error
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from MainServer.admin_config import (
+    agent_spaces,
+    clear_agent_chat_session,
+    communication_allows,
+    communication_edges,
+    communication_peers,
     configured_scope,
+    get_communication_config,
     get_agent_config,
+    get_ui_state,
     load_config,
     remove_agent_config,
     replace_agent_config,
+    replace_communication_config,
+    replace_ui_state,
     resolve_scope,
     save_config,
-    scope_allows,
     update_agent_config,
 )
-from MainServer.agent_templates import clear_agent_runtime, create_agent_from_template
-from MainServer.agent_templates import delete_agent_directory, read_agent_runtime_config, write_agent_runtime_config
+from MainServer.agent_templates import clear_agent_runtime, create_agent_from_template, list_agent_directories
+from MainServer.agent_templates import delete_agent_directory, read_agent_brain_prompt, read_agent_runtime_config
+from MainServer.agent_templates import write_agent_brain_prompt, write_agent_runtime_config
 from MainServer.mail_router import route_message_assets
 from MainServer.protocol import make_message
 from MainServer.state import AgentMail, MessageType
@@ -107,6 +119,15 @@ class AgentScopeUpdate(BaseModel):
     scope: Any = None
 
 
+class CommunicationConfigUpdate(BaseModel):
+    spaces: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class UiStateUpdate(BaseModel):
+    agent_positions: dict[str, Any] = Field(default_factory=dict)
+    chat_sessions: dict[str, Any] = Field(default_factory=dict)
+
+
 class AgentChatConfigUpdate(BaseModel):
     thread_id: str = Field(default="default")
     run_id: str | None = None
@@ -118,6 +139,17 @@ class AgentRuntimeClearRequest(BaseModel):
     include_store: bool = True
     include_mail: bool = True
     include_knowledge: bool = False
+    include_checkpoints: bool = False
+
+
+class AgentBrainPromptUpdate(BaseModel):
+    content: str
+
+
+class AgentServiceStartRequest(BaseModel):
+    host: str = "127.0.0.1"
+    port: int | None = Field(default=None, ge=1, le=65535)
+    main_server_url: str = "http://127.0.0.1:8000"
 
 
 class CreateAgentRequest(BaseModel):
@@ -175,6 +207,8 @@ class AgentRecord:
             "events": [_jsonable(event) for event in self.events],
             "scope": self.scope,
             "resolved_scope": resolve_scope(self.scope),
+            "communication_peers": communication_peers(self.agent_name),
+            "communication_spaces": [space["id"] for space in agent_spaces(self.agent_name)],
             "workspace": str(agent_workspace(self.agent_name)),
         }
 
@@ -183,11 +217,25 @@ class AgentRecord:
 
 
 app = FastAPI(title="LANGVIDEO MainServer", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:4173",
+        "http://localhost:4173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _registry: dict[str, AgentRecord] = {}
 _mailboxes: dict[str, list[AgentMail]] = {}
+_mail_log: list[dict[str, Any]] = []
+_managed_agent_processes: dict[str, subprocess.Popen] = {}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-STATIC_ROOT = Path(__file__).resolve().parent / "static"
+LOG_ROOT = PROJECT_ROOT / "tests" / "logs"
 
 
 def agent_workspace(agent_name: str) -> Path:
@@ -209,29 +257,257 @@ def _append_event(record: AgentRecord, event: dict[str, Any]) -> None:
     record.touch()
 
 
+def _append_mail_log(message: AgentMail, *, mode: str) -> None:
+    _mail_log.append({"mode": mode, "message": _jsonable(message), "at": _iso()})
+    if len(_mail_log) > 300:
+        del _mail_log[:-300]
+
+
+def _clear_agent_activity_history(agent_name: str) -> dict[str, Any]:
+    record = _registry.get(agent_name)
+    cleared_events = 0
+    if record is not None:
+        cleared_events = len(record.events)
+        record.events = []
+        record.last_event = None
+        record.touch()
+    before_mail = len(_mail_log)
+    _mail_log[:] = [
+        item
+        for item in _mail_log
+        if item.get("message", {}).get("from") != agent_name and item.get("message", {}).get("to") != agent_name
+    ]
+    ui = clear_agent_chat_session(agent_name)
+    return {
+        "agent_events": cleared_events,
+        "mail_events": before_mail - len(_mail_log),
+        "ui": ui,
+    }
+
+
+def _agent_is_busy(record: AgentRecord) -> bool:
+    if record.status != "running":
+        return False
+    ready_phases = {None, "startup", "ready", "after_agent"}
+    if record.phase in ready_phases:
+        return False
+    return True
+
+
+def _mail_wake_payload(agent_name: str, message: AgentMail) -> dict[str, Any]:
+    message_id = str(message.get("message_id") or "mail")
+    source = str(message.get("from") or "unknown")
+    return {
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "You have new mail in your MainServer inbox. "
+                    "Run your receive_messages middleware, read the inbox, and handle the mail. "
+                    f"message_id={message_id}; from={source}."
+                ),
+            }
+        ],
+        "session_id": f"mail-{agent_name}",
+        "run_id": f"mail-{message_id}",
+        "stream_mode": ["updates", "custom", "messages"],
+        "version": "v2",
+    }
+
+
+def _queue_mail_wake(background_tasks: BackgroundTasks, agent_name: str, message: AgentMail, *, mode: str) -> bool:
+    record = _registry.get(agent_name)
+    if record is None:
+        return False
+    service_url = _record_service_url(record)
+    if service_url is None:
+        _append_event(
+            record,
+            {
+                "event": "mail_wake_skipped",
+                "reason": "missing_service_url",
+                "message_id": message.get("message_id"),
+                "mode": mode,
+                "at": _iso(),
+            },
+        )
+        return False
+    _append_event(
+        record,
+        {
+            "event": "mail_wake_scheduled",
+            "message_id": message.get("message_id"),
+            "mode": mode,
+            "service_url": service_url,
+            "busy_at_schedule": _agent_is_busy(record),
+            "at": _iso(),
+        },
+    )
+    background_tasks.add_task(_wake_agent_for_mail, agent_name, service_url, message, mode)
+    return True
+
+
+async def _wake_agent_for_mail(agent_name: str, service_url: str, message: AgentMail, mode: str) -> None:
+    record = _get_or_create(agent_name)
+    payload = _mail_wake_payload(agent_name, message)
+    _append_event(
+        record,
+        {
+            "event": "mail_wake_start",
+            "message_id": message.get("message_id"),
+            "mode": mode,
+            "run_id": payload["run_id"],
+            "at": _iso(),
+        },
+    )
+    response: dict[str, Any] | None = None
+    for attempt in range(1, 7):
+        try:
+            response = await asyncio.to_thread(post_json, f"{service_url}/invoke", payload, 600.0)
+            break
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 409 and attempt < 6:
+                _append_event(
+                    record,
+                    {
+                        "event": "mail_wake_retry",
+                        "message_id": message.get("message_id"),
+                        "mode": mode,
+                        "attempt": attempt,
+                        "reason": body or exc.reason,
+                        "at": _iso(),
+                    },
+                )
+                await asyncio.sleep(1.0)
+                continue
+            _append_event(
+                record,
+                {
+                    "event": "mail_wake_error",
+                    "message_id": message.get("message_id"),
+                    "mode": mode,
+                    "status_code": exc.code,
+                    "error": body or exc.reason,
+                    "at": _iso(),
+                },
+            )
+            return
+        except urllib.error.URLError as exc:
+            _append_event(
+                record,
+                {
+                    "event": "mail_wake_error",
+                    "message_id": message.get("message_id"),
+                    "mode": mode,
+                    "error": f"agent service unreachable: {exc.reason}",
+                    "at": _iso(),
+                },
+            )
+            return
+        except Exception as exc:
+            _append_event(
+                record,
+                {
+                    "event": "mail_wake_error",
+                    "message_id": message.get("message_id"),
+                    "mode": mode,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "at": _iso(),
+                },
+            )
+            return
+    if response is None:
+        _append_event(
+            record,
+            {
+                "event": "mail_wake_error",
+                "message_id": message.get("message_id"),
+                "mode": mode,
+                "error": "wake retry exhausted",
+                "at": _iso(),
+            },
+        )
+        return
+    _append_event(
+        record,
+        {
+            "event": "mail_wake_success",
+            "message_id": message.get("message_id"),
+            "mode": mode,
+            "reply": str(response.get("reply") or "")[:500],
+            "at": _iso(),
+        },
+    )
+
+
+def _is_port_available(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        return sock.connect_ex((host, port)) != 0
+
+
+def _free_agent_port(host: str, preferred: int | None = None) -> int:
+    start = preferred or 8010
+    for port in range(start, min(start + 200, 65536)):
+        if _is_port_available(host, port):
+            return port
+    raise RuntimeError("no free agent service port found")
+
+
+def _agent_module_exists(agent_name: str) -> bool:
+    return (PROJECT_ROOT / "Deepagents" / agent_name / "AgentServer" / "__main__.py").exists()
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     return {"status": "ok", "time": _iso()}
 
 
-@app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_ROOT / "index.html")
-
-
-@app.get("/app.js")
-async def app_js() -> FileResponse:
-    return FileResponse(STATIC_ROOT / "app.js", media_type="application/javascript")
-
-
-@app.get("/styles.css")
-async def styles_css() -> FileResponse:
-    return FileResponse(STATIC_ROOT / "styles.css", media_type="text/css")
-
-
 @app.get("/agents")
 async def list_agents() -> dict[str, Any]:
     return {"count": len(_registry), "agents": [record.snapshot() for record in _registry.values()]}
+
+
+@app.get("/admin/agents/available")
+async def admin_available_agents() -> dict[str, Any]:
+    available: dict[str, dict[str, Any]] = {}
+    for item in list_agent_directories():
+        agent_name = item["agent_name"]
+        agent_config = get_agent_config(agent_name)
+        available[agent_name] = {
+            **item,
+            "status": "available",
+            "phase": None,
+            "step": None,
+            "metadata": {},
+            "scope": agent_config.get("scope"),
+            "resolved_scope": resolve_scope(agent_config.get("scope")),
+            "communication_peers": communication_peers(agent_name),
+            "communication_spaces": [space["id"] for space in agent_spaces(agent_name)],
+            "config": agent_config,
+            "registered": False,
+            "source": "filesystem",
+        }
+    for agent_name, record in _registry.items():
+        snapshot = record.snapshot()
+        existing = available.get(agent_name, {})
+        available[agent_name] = {
+            **existing,
+            **snapshot,
+            "registered": True,
+            "source": "registry",
+            "config": get_agent_config(agent_name),
+        }
+    agents = list(available.values())
+    agents.sort(key=lambda item: str(item.get("agent_name") or "").lower())
+    return {
+        "count": len(agents),
+        "agents": agents,
+        "communication": get_communication_config(),
+        "edges": communication_edges([str(agent.get("agent_name")) for agent in agents]),
+        "ui": get_ui_state(),
+    }
 
 
 @app.get("/agents/online")
@@ -250,11 +526,10 @@ async def get_agent(agent_name: str) -> dict[str, Any]:
 @app.post("/agents/register")
 async def register_agent(payload: AgentRegistration) -> dict[str, Any]:
     record = _get_or_create(payload.agent_name)
-    has_configured_scope, config_scope = configured_scope(payload.agent_name)
     record.host = payload.host or record.host
     record.pid = payload.pid or record.pid
     record.metadata.update(_jsonable(payload.metadata))
-    record.scope = config_scope if has_configured_scope else payload.scope
+    record.scope = payload.scope
     record.status = "registered"
     _append_event(
         record,
@@ -262,8 +537,10 @@ async def register_agent(payload: AgentRegistration) -> dict[str, Any]:
             "event": "register",
             "agent_name": record.agent_name,
             "scope": record.scope,
-            "scope_source": "mainserver_config" if has_configured_scope else "registration",
+            "scope_source": "registration_legacy",
             "resolved_scope": resolve_scope(record.scope),
+            "communication_peers": communication_peers(record.agent_name),
+            "communication_spaces": [space["id"] for space in agent_spaces(record.agent_name)],
             "workspace": str(agent_workspace(payload.agent_name)),
             "metadata": _jsonable(payload.metadata),
             "at": _iso(),
@@ -351,16 +628,23 @@ async def agent_peers(agent_name: str) -> dict[str, Any]:
     record = _registry.get(agent_name)
     if record is None:
         raise HTTPException(status_code=404, detail="agent not found")
-    resolved_scope = resolve_scope(record.scope)
-    if resolved_scope is None:
+    communication_peer_names = communication_peers(agent_name)
+    if communication_peer_names is None:
         peers = [registered_name for registered_name in _registry if registered_name != agent_name]
     else:
         peers = [
             registered_name
-            for registered_name in resolved_scope
+            for registered_name in communication_peer_names
             if registered_name in _registry and registered_name != agent_name
         ]
-    return {"agent_name": agent_name, "peers": peers, "scope": record.scope, "resolved_scope": resolved_scope}
+    return {
+        "agent_name": agent_name,
+        "peers": peers,
+        "communication_peers": communication_peer_names,
+        "communication_spaces": [space["id"] for space in agent_spaces(agent_name)],
+        "scope": record.scope,
+        "resolved_scope": resolve_scope(record.scope),
+    }
 
 
 class SendRequest(BaseModel):
@@ -375,10 +659,7 @@ class SendRequest(BaseModel):
 
 
 @app.post("/send")
-async def send_message(payload: SendRequest) -> dict[str, Any]:
-    sender = _registry.get(payload.from_)
-    sender_scope = sender.scope if sender else None
-
+async def send_message(payload: SendRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     message: AgentMail = {
         "message_id": payload.message_id,
         "from": payload.from_,
@@ -388,21 +669,25 @@ async def send_message(payload: SendRequest) -> dict[str, Any]:
         "attachments": payload.attachments,
     }
 
-    if not scope_allows(sender_scope, payload.to):
-        raise HTTPException(status_code=403, detail=f"agent '{payload.to}' is not in sender scope")
+    if payload.from_ != "user" and not communication_allows(payload.from_, payload.to):
+        raise HTTPException(status_code=403, detail=f"agent '{payload.to}' is not reachable from '{payload.from_}'")
     routed = route_message_assets(message, str(agent_workspace(payload.to)))
     _mailboxes.setdefault(payload.to, []).append(routed)
+    _append_mail_log(routed, mode="agent")
+    wake_scheduled = _queue_mail_wake(background_tasks, payload.to, routed, mode="agent")
 
-    return {"ok": True, "message_id": payload.message_id}
+    return {"ok": True, "message_id": payload.message_id, "wake_scheduled": wake_scheduled}
 
 
 @app.get("/recv/{agent_name}")
 async def recv_messages(agent_name: str) -> dict[str, Any]:
-    record = _registry.get(agent_name)
-    receiver_scope = record.scope if record else None
     messages = _mailboxes.pop(agent_name, [])
-    if resolve_scope(receiver_scope) is not None:
-        messages = [message for message in messages if scope_allows(receiver_scope, str(message.get("from") or ""))]
+    messages = [
+        message
+        for message in messages
+        if str(message.get("from") or "") == "user"
+        or communication_allows(str(message.get("from") or ""), agent_name)
+    ]
     return {"agent_name": agent_name, "messages": messages}
 
 
@@ -428,7 +713,7 @@ async def set_user_chat_config(agent_name: str, payload: AgentChatConfigUpdate) 
 
 
 @app.post("/user/chat")
-async def user_chat(payload: UserChatRequest) -> dict[str, Any]:
+async def user_chat(payload: UserChatRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     if payload.mode == "mail":
         try:
             mail_content = build_mail_content(payload)
@@ -443,12 +728,15 @@ async def user_chat(payload: UserChatRequest) -> dict[str, Any]:
         )
         routed = route_message_assets(message, str(agent_workspace(payload.agent_name)))
         _mailboxes.setdefault(payload.agent_name, []).append(routed)
+        _append_mail_log(routed, mode="user")
+        wake_scheduled = _queue_mail_wake(background_tasks, payload.agent_name, routed, mode="user")
         return {
             "ok": True,
             "mode": "mail",
             "agent_name": payload.agent_name,
             "message_id": message["message_id"],
             "message": routed,
+            "wake_scheduled": wake_scheduled,
         }
 
     record = _registry.get(payload.agent_name)
@@ -514,7 +802,7 @@ async def admin_create_agent(payload: CreateAgentRequest) -> dict[str, Any]:
 
     config_patch = dict(payload.config)
     config_patch.setdefault("template", payload.source_agent)
-    if payload.scope is not None or "scope" not in config_patch:
+    if payload.scope is not None:
         config_patch["scope"] = payload.scope
     config = update_agent_config(payload.agent_name, config_patch)
     return {"ok": True, "agent": result, "config": config}
@@ -537,6 +825,57 @@ async def admin_delete_agent(agent_name: str) -> dict[str, Any]:
 @app.put("/admin/agents/config")
 async def admin_replace_agents_config(payload: dict[str, Any]) -> dict[str, Any]:
     return save_config(payload)
+
+
+@app.get("/admin/communication")
+async def admin_get_communication() -> dict[str, Any]:
+    agents = [item["agent_name"] for item in list_agent_directories()]
+    return {
+        "communication": get_communication_config(),
+        "edges": communication_edges(agents),
+        "ui": get_ui_state(),
+    }
+
+
+@app.put("/admin/communication")
+async def admin_replace_communication(payload: CommunicationConfigUpdate) -> dict[str, Any]:
+    communication = replace_communication_config(payload.model_dump())
+    records = list(_registry.values())
+    for record in records:
+        _append_event(
+            record,
+            {
+                "event": "communication_update",
+                "communication_peers": communication_peers(record.agent_name),
+                "communication_spaces": [space["id"] for space in agent_spaces(record.agent_name)],
+                "at": _iso(),
+            },
+        )
+    return {"ok": True, "communication": communication, "edges": communication_edges()}
+
+
+@app.get("/admin/ui-state")
+async def admin_get_ui_state() -> dict[str, Any]:
+    return {"ok": True, "ui": get_ui_state()}
+
+
+@app.put("/admin/ui-state")
+async def admin_replace_ui_state(payload: UiStateUpdate) -> dict[str, Any]:
+    return {"ok": True, "ui": replace_ui_state(payload.model_dump())}
+
+
+@app.get("/admin/monitor")
+async def admin_monitor() -> dict[str, Any]:
+    agents = [record.snapshot() for record in _registry.values()]
+    agents.sort(key=lambda item: str(item.get("agent_name") or "").lower())
+    mailbox_counts = {agent_name: len(messages) for agent_name, messages in _mailboxes.items()}
+    return {
+        "agents": agents,
+        "mailbox_counts": mailbox_counts,
+        "recent_mail": _mail_log[-80:],
+        "communication": get_communication_config(),
+        "edges": communication_edges([str(agent.get("agent_name")) for agent in agents]),
+    }
 
 
 @app.get("/admin/agents/{agent_name}/config")
@@ -572,6 +911,26 @@ async def admin_patch_agent_runtime_config(agent_name: str, payload: dict[str, A
 async def admin_replace_agent_runtime_config(agent_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         result = write_agent_runtime_config(agent_name, payload, merge=False)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "agent_name": agent_name, **result}
+
+
+@app.get("/admin/agents/{agent_name}/brain")
+async def admin_get_agent_brain_prompt(agent_name: str) -> dict[str, Any]:
+    try:
+        result = read_agent_brain_prompt(agent_name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "agent_name": agent_name, **result}
+
+
+@app.put("/admin/agents/{agent_name}/brain")
+async def admin_replace_agent_brain_prompt(agent_name: str, payload: AgentBrainPromptUpdate) -> dict[str, Any]:
+    try:
+        result = write_agent_brain_prompt(agent_name, payload.content)
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "agent_name": agent_name, **result}
@@ -655,9 +1014,108 @@ async def admin_clear_agent_runtime(agent_name: str, payload: AgentRuntimeClearR
             include_store=payload.include_store,
             include_mail=payload.include_mail,
             include_knowledge=payload.include_knowledge,
+            include_checkpoints=payload.include_checkpoints,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "agent_name": agent_name, "runtime": result}
+    history = _clear_agent_activity_history(agent_name)
+    return {"ok": True, "agent_name": agent_name, "runtime": result, "history": history}
+
+
+@app.post("/admin/agents/{agent_name}/service/start")
+async def admin_start_agent_service(agent_name: str, payload: AgentServiceStartRequest) -> dict[str, Any]:
+    if not _agent_module_exists(agent_name):
+        raise HTTPException(status_code=404, detail=f"agent service module not found: {agent_name}")
+
+    process = _managed_agent_processes.get(agent_name)
+    if process is not None and process.poll() is None:
+        record = _registry.get(agent_name)
+        return {
+            "ok": True,
+            "agent_name": agent_name,
+            "already_running": True,
+            "pid": process.pid,
+            "agent": record.snapshot() if record else None,
+        }
+
+    try:
+        port = _free_agent_port(payload.host, payload.port)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    LOG_ROOT.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_ROOT / f"agent_service_{agent_name}.log"
+    log_handle = log_path.open("a", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "AGENT_NAME": agent_name,
+            "AGENT_HOST": payload.host,
+            "AGENT_PORT": str(port),
+            "MAIN_SERVER_URL": payload.main_server_url.rstrip("/"),
+        }
+    )
+    try:
+        process = subprocess.Popen(
+            ["uv", "run", "python", "-m", f"Deepagents.{agent_name}.AgentServer"],
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        log_handle.close()
+        raise HTTPException(status_code=500, detail=f"failed to start agent service: {exc}") from exc
+
+    _managed_agent_processes[agent_name] = process
+    record = _get_or_create(agent_name)
+    record.status = "starting"
+    record.metadata.update(
+        {
+            "service_url": f"http://{payload.host}:{port}",
+            "service_host": payload.host,
+            "service_port": port,
+            "managed_pid": process.pid,
+            "managed_log": str(log_path),
+        }
+    )
+    _append_event(
+        record,
+        {
+            "event": "service_start_requested",
+            "pid": process.pid,
+            "service_url": f"http://{payload.host}:{port}",
+            "log": str(log_path),
+            "at": _iso(),
+        },
+    )
+    return {
+        "ok": True,
+        "agent_name": agent_name,
+        "pid": process.pid,
+        "service_url": f"http://{payload.host}:{port}",
+        "log": str(log_path),
+        "agent": record.snapshot(),
+    }
+
+
+@app.post("/admin/agents/{agent_name}/service/stop")
+async def admin_stop_agent_service(agent_name: str) -> dict[str, Any]:
+    process = _managed_agent_processes.pop(agent_name, None)
+    stopped = False
+    if process is not None and process.poll() is None:
+        process.terminate()
+        stopped = True
+    record = _registry.get(agent_name)
+    if record is not None:
+        record.status = "stopped"
+        _append_event(record, {"event": "service_stop_requested", "managed": stopped, "at": _iso()})
+    return {
+        "ok": True,
+        "agent_name": agent_name,
+        "stopped": stopped,
+        "agent": record.snapshot() if record else None,
+    }

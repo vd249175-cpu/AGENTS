@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "defaultRunId": "knowledgeseedagent-run",
+  "defaultThreadId": "default",
+  "eventType": "agent_debug_trace",
+  "truncateLimit": 220
+}
+

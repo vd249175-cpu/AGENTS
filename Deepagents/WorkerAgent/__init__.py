@@ -1,2 +1,0 @@
-"""SeedAgent service package."""
-

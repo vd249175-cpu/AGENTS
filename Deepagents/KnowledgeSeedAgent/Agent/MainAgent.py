@@ -30,16 +30,16 @@ from .middlewares.send_messages import Config as SendMessagesConfig
 from .server.demo_server import StrictConfig, config_from_external
 from .server.memory_bridge import build_knowledge_manager_middleware
 from .server.path_resolver import WORKSPACE_ROOT, ensure_seed_workspace, resolve_store_path
-from .sandbox import get_seed_agent_sandbox
+from .sandbox import get_knowledge_seed_agent_sandbox
 
 
 AGENT_ROOT = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = AGENT_ROOT / "SeedAgentConfig.local.json"
-EXAMPLE_CONFIG_PATH = AGENT_ROOT / "SeedAgentConfig.example.json"
+DEFAULT_CONFIG_PATH = AGENT_ROOT / "KnowledgeSeedAgentConfig.local.json"
+EXAMPLE_CONFIG_PATH = AGENT_ROOT / "KnowledgeSeedAgentConfig.example.json"
 
 
 def default_config_path() -> Path:
-    override = os.getenv("LANGVIDEO_SEED_AGENT_CONFIG")
+    override = os.getenv("LANGVIDEO_KNOWLEDGE_SEED_AGENT_CONFIG")
     if override:
         return Path(override).expanduser()
     if DEFAULT_CONFIG_PATH.exists():
@@ -48,17 +48,17 @@ def default_config_path() -> Path:
 
 
 class Config(StrictConfig):
-    agentName: str = Field(default="SeedAgent")
-    agentRole: str = Field(default="general seed agent")
+    agentName: str = Field(default="KnowledgeSeedAgent")
+    agentRole: str = Field(default="knowledge seed agent")
     agentDescription: str = Field(
-        default="一个通用 Agent 模板，负责对话、工具调用、Agent 通讯和可复制的基础运行骨架。"
+        default="负责把 knowledge 中的长文档切分进入记忆图，并通过记忆管理工具维护知识库。"
     )
     agentResponsibilities: list[str] = Field(
         default_factory=lambda: [
             "组织当前会话的任务步骤",
             "通过 MainServer 与其他 Agent 通讯",
-            "根据用户目标选择合适的 middleware 工具",
-            "在需要外部协作时发送或读取 AgentMail",
+            "将 workspace/knowledge 中的长文档切分并写入记忆",
+            "使用 manage_knowledge 查询、整理、修正和关联记忆图内容",
             "以流式事件汇报关键执行过程",
             "使用 middleware 自动挂载的工具，不在 agent 装配层重复挂 tools",
         ]
@@ -85,14 +85,14 @@ class Config(StrictConfig):
 
     enableMemoryMiddleware: bool = Field(default=True)
     enableSkillsMiddleware: bool = Field(default=True)
-    enableKnowledgeManagerMiddleware: bool = Field(default=False)
-    enableKnowledgeIngestMiddleware: bool = Field(default=False)
+    enableKnowledgeManagerMiddleware: bool = Field(default=True)
+    enableKnowledgeIngestMiddleware: bool = Field(default=True)
     enableReceiveMessagesMiddleware: bool = Field(default=True)
     enableSendMessagesMiddleware: bool = Field(default=True)
     enableAgentStepTraceMiddleware: bool = Field(default=True)
     enableDebugTraceMiddleware: bool = Field(default=False)
 
-    defaultRunId: str = Field(default="seedagent-run")
+    defaultRunId: str = Field(default="knowledgeseedagent-run")
     defaultThreadId: str = Field(default="default")
 
     defaultDestination: str | None = Field(default=None)
@@ -155,7 +155,7 @@ class Config(StrictConfig):
     debugTraceTruncateLimit: int = Field(default=220, ge=20)
 
     @classmethod
-    def load_config_seed_agent(cls, source=None):
+    def load_config_knowledge_seed_agent(cls, source=None):
         return config_from_external(cls, source or default_config_path())
 
 
@@ -168,14 +168,14 @@ class AgentSpec:
 
 
 AGENT_SPEC = AgentSpec(
-    name="SeedAgent",
-    role="general seed agent",
-    description="一个通用 Agent 模板，负责对话、工具调用、Agent 通讯和可复制的基础运行骨架。",
+    name="KnowledgeSeedAgent",
+    role="knowledge seed agent",
+    description="负责把 knowledge 中的长文档切分进入记忆图，并通过记忆管理工具维护知识库。",
     responsibilities=(
         "组织当前会话的任务步骤",
         "通过 MainServer 与其他 Agent 通讯",
-        "根据用户目标选择合适的 middleware 工具",
-        "在需要外部协作时发送或读取 AgentMail",
+        "将 workspace/knowledge 中的长文档切分并写入记忆",
+        "使用 manage_knowledge 查询、整理、修正和关联记忆图内容",
         "以流式事件汇报关键执行过程",
         "使用 middleware 自动挂载的工具，不在 agent 装配层重复挂 tools",
     ),
@@ -195,7 +195,7 @@ class SubState(
 
 
 class AgentSchema:
-    name = "seed_agent"
+    name = "knowledge_seed_agent"
     state_schema = SubState
 
 
@@ -380,7 +380,7 @@ async def _build_main_agent_async(
     debug: bool = False,
 ) -> SeedMainAgent:
     ensure_seed_workspace()
-    current_config = config or Config.load_config_seed_agent(config_path)
+    current_config = config or Config.load_config_knowledge_seed_agent(config_path)
     updates: dict[str, Any] = {}
     if provider is not None:
         updates["chatModelProvider"] = provider
@@ -398,7 +398,7 @@ async def _build_main_agent_async(
     from deepagents import create_deep_agent
 
     agent_name = runtime_agent_name(current_config)
-    backend = get_seed_agent_sandbox(WORKSPACE_ROOT, agent_name=agent_name)
+    backend = get_knowledge_seed_agent_sandbox(WORKSPACE_ROOT, agent_name=agent_name)
     checkpoint_stack = AsyncExitStack()
     checkpoint_path = resolve_store_path(None, default_relative="checkpoints/langgraph.sqlite3")
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)

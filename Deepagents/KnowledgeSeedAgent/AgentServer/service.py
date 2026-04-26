@@ -14,9 +14,9 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from Deepagents.SeedAgent.Agent.MainAgent import (
+from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import (
     AGENT_SPEC,
-    Config as SeedAgentConfig,
+    Config as KnowledgeSeedAgentConfig,
     WORKSPACE_ROOT,
     SeedMainAgent,
     abuild_main_agent,
@@ -288,7 +288,7 @@ class AgentObserver:
             self.state.last_sync_error = f"{type(exc).__name__}: {exc}"
 
 
-class SeedAgentRuntime:
+class KnowledgeSeedAgentRuntime:
     def __init__(self) -> None:
         self.main_agent: SeedMainAgent | None = None
 
@@ -461,9 +461,9 @@ def create_app(scope: Any = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         sys.excepthook = _sync_exception_hook
         asyncio.get_event_loop().set_exception_handler(_loop_exception_handler)
-        app.state.runtime = SeedAgentRuntime()
+        app.state.runtime = KnowledgeSeedAgentRuntime()
         app.state.comm = AgentComm(main_server_url, observer.agent_name)
-        agent_config = SeedAgentConfig.load_config_seed_agent()
+        agent_config = KnowledgeSeedAgentConfig.load_config_knowledge_seed_agent()
         if agent_config.agentName != observer.agent_name:
             agent_config = agent_config.model_copy(update={"agentName": observer.agent_name})
         app.state.runtime.main_agent = await abuild_main_agent(comm=app.state.comm, config=agent_config)
@@ -594,7 +594,7 @@ def main() -> int:
 
     service_config = load_service_config()
     uvicorn.run(
-        "Deepagents.SeedAgent.AgentServer.service:app",
+        "Deepagents.KnowledgeSeedAgent.AgentServer.service:app",
         host=service_config.host,
         port=service_config.port,
         reload=False,

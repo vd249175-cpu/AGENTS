@@ -1,8 +1,0 @@
-{
-  "enabled": true,
-  "defaultRunId": "seedagent-run",
-  "defaultThreadId": "default",
-  "eventType": "agent_debug_trace",
-  "truncateLimit": 220
-}
-

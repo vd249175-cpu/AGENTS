@@ -9,9 +9,12 @@
 
 当前不直接迁移旧项目中的 `MemoryManage/*`、RAG、索引构建、记忆召回等历史实现。
 记忆能力通过复制到当前项目的 `memory/` 包接入，优先使用它的 demo 风格公开入口：
-`ChunkApplyTool` 和 `KnowledgeManagerCapabilityMiddleware`。主 agent 仍可接入
-deepagents 自带的 `MemoryMiddleware` 与 `SkillsMiddleware`，分别读取
-`workspace/brain/AGENTS.md` 和 `workspace/skills/*/SKILL.md`。
+`ChunkApplyTool` 和 `KnowledgeManagerCapabilityMiddleware`。
+当前保留两套 seed：`SeedAgent` 是通用模板，默认不挂知识入库/管理工具；
+`KnowledgeSeedAgent` 是知识库模板，默认挂 `ingest_knowledge_document` 和
+`manage_knowledge`。主 agent 仍可接入 deepagents 自带的 `MemoryMiddleware`
+与 `SkillsMiddleware`，分别读取 `workspace/brain/AGENTS.md` 和
+`workspace/skills/*/SKILL.md`。
 
 ---
 
@@ -21,7 +24,8 @@ deepagents 自带的 `MemoryMiddleware` 与 `SkillsMiddleware`，分别读取
 LANGVIDEO/
 ├── Deepagents/                  # 多 Agent 服务目录
 │   ├── __init__.py
-│   └── SeedAgent/               # 种子 Agent，示例/模板
+│   ├── SeedAgent/               # 通用种子 Agent，默认不挂知识工具
+│   └── KnowledgeSeedAgent/      # 知识库种子 Agent，挂文档入库和管理工具
 ├── MainServer/                  # 中心化注册 / 路由 / 调度服务
 │   ├── __init__.py
 │   ├── main_server.py           # FastAPI 应用：注册、状态、事件、消息路由
@@ -30,10 +34,11 @@ LANGVIDEO/
 │   ├── comm.py                  # Agent 端通讯 SDK
 │   ├── mail_router.py           # 附件/邮件资产路由
 │   ├── admin_config.py          # MainServer 本地 agent/discovery 配置读写
-│   ├── agent_templates.py       # 从 SeedAgent 模板复制创建新 Agent
+│   ├── agent_templates.py       # 从 seed 模板复制创建新 Agent
 │   ├── config/                  # 本地运行配置示例；真实本地配置默认不提交
 │   └── test_comm.py             # 通讯链路端到端验证
 ├── tests/                       # 单元测试、集成测试、真实模型流式测试
+├── frontend/                    # React 管理台
 ├── main.py                      # 本地运行入口
 ├── sandbox.py                   # 通用沙盒实现
 └── deepagent_sandbox.Dockerfile
@@ -47,10 +52,10 @@ LANGVIDEO/
 
 ## 2. Deepagents — Agent 目录规范
 
-### 2.1 SeedAgent 目录树
+### 2.1 Agent 目录树
 
 ```text
-SeedAgent/
+<XxxAgent>/
 ├── workspace/                    # Agent 运行时工作目录
 │   ├── brain/                    # Agent 自身行为约束，文件会进入系统提示词
 │   ├── knowledge/                # 业务知识文件
@@ -65,7 +70,7 @@ SeedAgent/
 ├── Agent/                        # Layer 2：Agent 组装
 │   ├── __init__.py
 │   ├── MainAgent.py              # 主 agent 构建
-│   ├── SeedAgentConfig.example.json # agent runtime 完整配置示例
+│   ├── <XxxAgent>Config.example.json # agent runtime 完整配置示例
 │   ├── protocol.py               # 通讯/任务层共享契约
 │   ├── Models/                   # init_chat_model 模型 + JSON 模型配置
 │   ├── SubAgent/                 # 工具或 middleware 中会用到的 agent
@@ -103,7 +108,7 @@ MainServer/
 ├── comm.py            # AgentComm：Agent 端通讯 SDK
 ├── mail_router.py     # 附件/邮件资产路由
 ├── admin_config.py    # MainServer 本地 agent/discovery 配置读写
-├── agent_templates.py # 从 SeedAgent 模板复制创建新 Agent
+├── agent_templates.py # 从 seed 模板复制创建新 Agent
 ├── config/            # 本地配置示例；agents.local.json 默认不提交
 └── test_comm.py       # 通讯链路端到端验证
 ```
@@ -115,7 +120,7 @@ MainServer/
 | `comm.py` | `AgentComm` 类，提供 `send / recv / peers` | 纯 SDK，不持有状态，不引入 `requests` / `httpx` |
 | `mail_router.py` | 路由本地附件到接收方 workspace | 不下载网络资源，不执行 Agent 任务 |
 | `admin_config.py` | 读取和写入 MainServer 本地 agent/discovery 配置 | 不导入 Agent 运行时，不保存模型凭据 |
-| `agent_templates.py` | 从 SeedAgent 模板复制创建新 Agent 目录 | 不启动模型，不改已有 Agent，除非显式 overwrite |
+| `agent_templates.py` | 从 `SeedAgent` 或 `KnowledgeSeedAgent` 模板复制创建新 Agent 目录 | 不启动模型，不改已有 Agent，除非显式 overwrite |
 | `main_server.py` | FastAPI 应用，注册、状态更新、事件收集、消息路由 | 不持有 Agent 运行时，不做任务执行 |
 
 ---
@@ -160,7 +165,7 @@ CollaborationState       # {"agentcard", "agent_messages"}
 
 | 端点 | 方法 | 描述 |
 |---|---|---|
-| `POST /send` | 发送 | `to=agent_name` 点对点，当前不做广播 |
+| `POST /send` | 发送 | `to=agent_name` 点对点，当前不做广播；写入 inbox 后会尝试唤醒接收方 AgentServer 跑一轮 |
 | `GET /recv/{agent_name}` | 接收 | 一次性清空信箱，pull 模型，非 push |
 | `GET /agents/peers/{agent_name}` | 发现 | 返回当前 agent 可见的 peer |
 | `POST /user/chat` | 用户入口 | 把用户输入归一成 user message；`mode=direct` 代理目标 AgentServer `/invoke`，`mode=mail` 写入目标 agent inbox |
@@ -179,15 +184,19 @@ CollaborationState       # {"agentcard", "agent_messages"}
   - `mode="direct"` 时，MainServer 根据注册 metadata 中的 `service_url` 把归一化后的
     `{"role": "user", "content": ...}` 发送到目标 AgentServer `/invoke`。
   - `mode="mail"` 时，MainServer 构造 `AgentMail` 写入目标 agent inbox；附件仍按
-    `mail_router` 路由到接收方 workspace。
+    `mail_router` 路由到接收方 workspace，并在接收方服务已注册时自动触发或排队重试
+    一次 mail wake invocation，让 `receive_messages` 中间件实时处理 inbox。
   - 多模态内容允许通过 `content`/`parts` 传入已有 content blocks，也允许把图片
     URL 或 data URL 放进 `attachments`，入口会转换为 `image_url` block。
-  - `thread_id` 与历史 `session_id` 等价；若请求未显式传入，入口读取
+- `thread_id` 与历史 `session_id` 等价；若请求未显式传入，入口读取
     `/user/chat/config/{agent_name}` 中的默认 `thread_id/run_id`。
+- 对话入口的 `run_id` 只用于本次 agent invocation / stream 追踪；不要用它自动覆盖
+  Agent runtime config 中的 `knowledgeRunId`。知识图身份由 `knowledgeRunId` 管理，
+  新开 `thread_id` 应清空对话 checkpoint 上下文，但仍可访问同一 agent 的知识库。
 - 浏览器自动化是 agent 侧能力，不是 Codex 自身能力；它通过 `workspace/skills/agent-browser/SKILL.md` 接入，Docker sandbox 提供 `agent-browser` + `/usr/bin/chromium`，真实流程由 CLI 的 `skills get core` 提供。
-- SeedAgent 记忆能力通过 `memory/` 包接入：`ingest_knowledge_document` 将
-  `/workspace/knowledge/...` 文件切分写入记忆图，`manage_knowledge` 管理、查询、
-  修正和关联记忆内容。
+- KnowledgeSeedAgent 记忆能力通过 `memory/` 包接入：`ingest_knowledge_document`
+  将 `/workspace/knowledge/...` 文件切分写入记忆图，`manage_knowledge` 管理、
+  查询、修正和关联记忆内容。通用 `SeedAgent` 默认不启用这两个能力。
 
 ### 5.3 注册链路
 
@@ -199,31 +208,45 @@ Agent 启动
 → AgentObserver.set_status("running")
 ```
 
-每个 Agent 必须在 lifespan 中完成注册，启动完成后状态为 `running`。
+每个 Agent 必须在 lifespan 中完成注册，启动完成后状态为 `running`。AgentServer
+完成一次 invocation 后，对 MainServer 仍应上报 `status="running"`、
+`phase="ready"`、`step="waiting"`，表示服务在线并等待下一次任务；真正的忙闲互斥由
+AgentServer 本地 `running` 标记控制，不用 `idle` 作为中心状态。
 
-### 5.4 Scope 管道限制
+### 5.4 全局通讯空间
 
-scope 由 MainServer 管理，Agent 不在本地私自声明全局可达性。
-MainServer 默认读取 `MainServer/config/agents.local.json`，该文件是本地运行配置，
-不提交；可通过 `MAIN_SERVER_AGENT_CONFIG` 指向其他配置文件。
-仓库只保留 `MainServer/config/agents.example.json` 作为示例。
+Agent 可达性由 MainServer 的全局 `communication.spaces` 管理，不再作为单个
+Agent 的私有配置，也不需要 AgentServer 本地声明。MainServer 默认读取
+`MainServer/config/agents.local.json`，该文件是本地运行配置，不提交；可通过
+`MAIN_SERVER_AGENT_CONFIG` 指向其他配置文件。仓库只保留
+`MainServer/config/agents.example.json` 作为示例。
 
-```python
-# scope=None 表示全部可达
-# scope=[] 表示与谁都不能通讯
-# scope=["agent-b", "agent-c"] 表示只能和指定 agent 通讯
-# scope=[[], "agent-b", ["agent-c", []]] 这类嵌套结构会保留原始形态，
-# 路由判断时递归解析出其中的 agent name。
+```json
+{
+  "communication": {
+    "spaces": [
+      {"id": "left", "name": "Left", "members": ["AgentA", "BridgeAgent"]},
+      {"id": "right", "name": "Right", "members": ["BridgeAgent", "AgentB"]}
+    ]
+  }
+}
 ```
 
-Scope 影响三个维度：
+通讯语义：
+- 同一个 space 内的所有成员两两可以通讯。
+- 多个 space 的通讯关系取并集。
+- 如果一个 agent 同时属于多个 space，它可以分别和这些 space 内的成员通讯；
+  不同 space 的非共享成员不会因为这个交集 agent 而自动互通。
+- `communication.spaces=[]` 表示兼容默认：已注册 agent 之间全部可通讯。
+- 旧的 per-agent `scope` 端点只作为兼容接口保留，新的路由判断不依赖它。
+
+全局通讯空间影响三个维度：
 
 | 维度 | 规则 |
 |---|---|
-| 注册 | 注册 payload 可带兼容 scope，但若 MainServer 本地配置中存在该 agent 的 scope，则以 MainServer 配置为准 |
-| 发送 | 发送方只能向自己 scope 内的 agent 发消息；scope 外目标返回 403 |
-| 接收 | 接收方只保留来自自己 scope 内的消息；scope 外来源被过滤 |
-| 发现 | `GET /agents/peers/{agent_name}` 只返回 scope 内已注册 agent，且不包含自己 |
+| 发送 | 发送方只能向至少共享一个 space 的 agent 发消息；若没有配置任何 space，则默认全可达 |
+| 接收 | 接收方只保留来自可通讯 agent 或 user 的消息 |
+| 发现 | `GET /agents/peers/{agent_name}` 返回同 space 内已注册 agent，且不包含自己 |
 
 `/agents/online` 不受 scope 影响，仍返回全局列表，作为管理员视角。
 
@@ -232,10 +255,19 @@ MainServer 后端管理接口：
 | 端点 | 方法 | 描述 |
 |---|---|---|
 | `/admin/agents/config` | `GET/PUT` | 读取或替换中心 agent/discovery 配置 |
-| `/admin/agents/create` | `POST` | 从 `SeedAgent` 或指定模板复制创建新 Agent 目录，并写入中心配置 |
+| `/admin/communication` | `GET/PUT` | 读取或替换全局通讯空间，并返回由 spaces 推导出的通讯边 |
+| `/admin/ui-state` | `GET/PUT` | 读取或替换前端图节点位置和聊天会话缓存 |
+| `/admin/monitor` | `GET` | 返回当前 agent 状态、mailbox 计数和最近邮件记录 |
+| `/admin/agents/create` | `POST` | 从 `SeedAgent`、`KnowledgeSeedAgent` 或指定模板复制创建新 Agent 目录，并写入中心配置 |
 | `/admin/agents/{agent_name}/config` | `GET/PATCH/PUT` | 读取、合并或替换单个 Agent 的配置 |
-| `/admin/agents/{agent_name}/scope` | `GET/PUT` | 读取或替换单个 Agent 的原始 scope，并返回解析后的可达 agent |
-| `/admin/agents/{agent_name}/runtime/clear` | `POST` | 清理本地运行态目录，默认清 `Agent/store` 和 `workspace/mail`，不清业务 knowledge |
+| `/admin/agents/{agent_name}/brain` | `GET/PUT` | 读取或替换 `workspace/brain/AGENTS.md` 常驻 brain 提示词 |
+| `/admin/agents/{agent_name}/scope` | `GET/PUT` | legacy 兼容接口；新通讯图不依赖它 |
+| `/admin/agents/{agent_name}/runtime/clear` | `POST` | 按参数清理本地运行态目录；前端“清缓存”按钮只清 checkpoint 数据 |
+
+前端“清缓存”按钮的固定语义：
+- 后端只清 `Agent/store/checkpoints` 和 `Agent/store/memory/checkpoint`。
+- 不清 `workspace/mail`、`workspace/knowledge`、`Agent/store/memory/cache` 或 staging。
+- 同时清空 MainServer UI state 中该 agent 的历史对话缓存。
 
 ---
 
@@ -322,21 +354,23 @@ ReceiveMessagesMiddleware
 
 ## 7. 模型配置约束
 
-Agent runtime 完整配置放在 `Deepagents/*/Agent/SeedAgentConfig.local.json`，
-示例为 `SeedAgentConfig.example.json`。该配置包含：
+Agent runtime 完整配置放在 `Deepagents/*/Agent/<XxxAgent>Config.local.json`，
+示例为 `<XxxAgent>Config.example.json`。该配置包含：
 
-- agent 身份、角色、职责和补充系统提示词。
+- agent name、模型、middleware 和工具运行参数。agent 身份、角色和顶层行为提示词
+  统一写入 `workspace/brain/AGENTS.md`，不再由 runtime config 拼接生成顶层
+  `system_prompt`。
 - chat model、embedding model、API key、base URL。
 - Neo4j URI、用户名、密码和 database。
 - middleware 开关。
-- middleware 所属 tool 的参数，例如 `send_message_to_agent` 默认目标和
+- middleware 所属 tool 的参数，例如 `send_message_to_agent` 默认目标。知识库模板还包含
   `ingest_knowledge_document` 分片参数。
-- `memory/README.md` 中两个公开入口的配置面：
+- `KnowledgeSeedAgent` 覆盖 `memory/README.md` 中两个公开入口的配置面：
   `tools.ChunkApplyTool` 的 identity/public/runtime/chunking/document edge/keyword embedding
   参数，以及 `middleware.KnowledgeManagerCapabilityMiddleware` 的 trace、内部 manager、
   discovery、document query/write、graph query/write 和 graph query preset 参数。
 
-`SeedAgentConfig.local.json` 包含本地凭据，默认不提交。`AgentServer/ServiceConfig.json`
+`<XxxAgent>Config.local.json` 包含本地凭据，默认不提交。`AgentServer/ServiceConfig.json`
 只保存独立服务配置，例如 `agent_name`、`host`、`port`、`main_server_url`。
 
 旧模型配置放在 `Deepagents/*/Agent/Models/`，只作为兼容配置保留。
@@ -345,8 +379,8 @@ Agent runtime 完整配置放在 `Deepagents/*/Agent/SeedAgentConfig.local.json`
 
 | 配置文件 | 消费方 | 用途 |
 |---|---|---|
-| `SeedAgentConfig.local.json` | MainAgent / memory bridge | agent runtime 完整本地配置，默认不提交 |
-| `SeedAgentConfig.example.json` | MainAgent / template | agent runtime 完整配置示例 |
+| `<XxxAgent>Config.local.json` | MainAgent / memory bridge | agent runtime 完整本地配置，默认不提交 |
+| `<XxxAgent>Config.example.json` | MainAgent / template | agent runtime 完整配置示例 |
 | `model_config.json` | 旧兼容 | 旧主 agent 模型结构 |
 | `AgentApi.json` | 旧兼容 | 旧 MainAgent API 配置 |
 | `ToolModel.json` | tools / SubAgent | 工具或子 agent 可选模型 |

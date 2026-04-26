@@ -52,6 +52,30 @@ def agent_runtime_config_paths(agent_name: str) -> dict[str, Path]:
     }
 
 
+def list_agent_directories() -> list[dict[str, Any]]:
+    if not DEEPAGENTS_ROOT.exists():
+        return []
+    agents: list[dict[str, Any]] = []
+    for path in sorted(DEEPAGENTS_ROOT.iterdir(), key=lambda item: item.name.lower()):
+        if not path.is_dir() or path.name.startswith(".") or path.name == "__pycache__":
+            continue
+        if not (path / "Agent").is_dir() or not (path / "AgentServer").is_dir():
+            continue
+        try:
+            agent_name = validate_agent_name(path.name)
+        except ValueError:
+            continue
+        agents.append(
+            {
+                "agent_name": agent_name,
+                "path": str(path),
+                "workspace": str(path / "workspace"),
+                "has_runtime_config": any(config_path.exists() for config_path in agent_runtime_config_paths(agent_name).values()),
+            }
+        )
+    return agents
+
+
 def read_agent_runtime_config(agent_name: str) -> dict[str, Any]:
     paths = agent_runtime_config_paths(agent_name)
     source = paths["local"] if paths["local"].exists() else paths["example"]
@@ -87,6 +111,55 @@ def write_agent_runtime_config(
         encoding="utf-8",
     )
     return {"path": str(paths["local"]), "uses_local": True, "config": config}
+
+
+def agent_card_path(agent_name: str) -> Path:
+    return agent_root(validate_agent_name(agent_name)) / "AgentServer" / "AgentCard.json"
+
+
+def read_agent_card(agent_name: str) -> dict[str, Any]:
+    path = agent_card_path(agent_name)
+    if not path.exists():
+        raise FileNotFoundError(f"agent card not found for {agent_name}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"agent card must be an object: {path}")
+    return {"path": str(path), "card": data}
+
+
+def write_agent_card(agent_name: str, value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("agent card must be an object")
+    target_name = validate_agent_name(agent_name)
+    card = dict(value)
+    card.setdefault("agent_name", target_name)
+    path = agent_card_path(target_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(card, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return {"path": str(path), "card": card}
+
+
+def agent_brain_prompt_path(agent_name: str) -> Path:
+    return agent_root(validate_agent_name(agent_name)) / "workspace" / "brain" / "AGENTS.md"
+
+
+def read_agent_brain_prompt(agent_name: str) -> dict[str, Any]:
+    path = agent_brain_prompt_path(agent_name)
+    if not path.exists():
+        raise FileNotFoundError(f"agent brain prompt not found for {agent_name}")
+    return {"path": str(path), "content": path.read_text(encoding="utf-8")}
+
+
+def write_agent_brain_prompt(agent_name: str, content: str) -> dict[str, Any]:
+    if not isinstance(content, str):
+        raise ValueError("brain prompt content must be a string")
+    path = agent_brain_prompt_path(agent_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content.rstrip() + "\n", encoding="utf-8")
+    return {"path": str(path), "content": path.read_text(encoding="utf-8")}
 
 
 def _snake_name(value: str) -> str:
@@ -138,6 +211,7 @@ def clear_agent_runtime(
     include_store: bool = True,
     include_mail: bool = True,
     include_knowledge: bool = False,
+    include_checkpoints: bool = False,
 ) -> dict[str, Any]:
     target_name = validate_agent_name(agent_name)
     agent_root_path = agent_root(target_name)
@@ -148,6 +222,13 @@ def clear_agent_runtime(
     targets: list[Path] = []
     if include_store:
         targets.append(agent_root_path / "Agent" / "store")
+    elif include_checkpoints:
+        targets.extend(
+            [
+                agent_root_path / "Agent" / "store" / "checkpoints",
+                agent_root_path / "Agent" / "store" / "memory" / "checkpoint",
+            ]
+        )
     if include_mail:
         targets.append(agent_root_path / "workspace" / "mail")
     if include_knowledge:
@@ -177,6 +258,7 @@ def clear_agent_runtime(
         "include_store": include_store,
         "include_mail": include_mail,
         "include_knowledge": include_knowledge,
+        "include_checkpoints": include_checkpoints,
     }
 
 

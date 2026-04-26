@@ -12,10 +12,12 @@
   收拢成 `Config / SubState / Schema / helper / wrapper / default entry`
   的单文件形态；共享的 demo 级 helper 现在放在 `Agent/server/demo_server.py`。
 
-当前已开始接入复制到本项目的 `memory/` 包。第一步接在 `SeedAgent`：
-`ingest_knowledge_document` 负责把 `workspace/knowledge` 中的长文档切分进入
-记忆图，`manage_knowledge` 负责查询、整理、修正和关联记忆内容。旧项目中的
-`MemoryManage/*`、RAG、索引构建、记忆召回不直接迁入骨架。
+当前有两套 seed 模板：
+- `SeedAgent`：通用模板，默认不挂文档切分入库和知识管理工具。
+- `KnowledgeSeedAgent`：知识库模板，接入复制到本项目的 `memory/` 包；
+  `ingest_knowledge_document` 负责把 `workspace/knowledge` 中的长文档切分进入
+  记忆图，`manage_knowledge` 负责查询、整理、修正和关联记忆内容。
+旧项目中的 `MemoryManage/*`、RAG、索引构建、记忆召回不直接迁入骨架。
 
 ## 目录摘要
 
@@ -32,10 +34,11 @@ LANGVIDEO/
 │       ├── store/
 │       ├── server/
 │       ├── MainAgent.py
-│       ├── SeedAgentConfig.example.json
+│       ├── <XxxAgent>Config.example.json
 │       ├── protocol.py
 │       └── sandbox.py
 ├── MainServer/
+├── frontend/                    # React 管理台
 ├── tests/
 └── project docs
 ```
@@ -48,21 +51,22 @@ LANGVIDEO/
   - 多 Agent 服务目录，不是单个 Agent 的业务目录。
   - 每个 `XxxAgent/` 都是独立服务，单独启动、单独注册、单独上报状态。
 
-- `Deepagents/SeedAgent/AgentServer/`
+- `Deepagents/<XxxAgent>/AgentServer/`
   - Layer 1，服务外壳。
   - 负责 FastAPI 生命周期、MainServer 注册、状态上报、异常上报和 stream 事件转发。
   - `ServiceConfig.json` 管独立服务启动配置，例如 `agent_name`、`host`、`port`、
     `main_server_url`。
   - 不写业务逻辑，不直接做模型调用。
 
-- `Deepagents/SeedAgent/Agent/`
+- `Deepagents/<XxxAgent>/Agent/`
   - Layer 2，Agent 组装层。
   - `MainAgent.py` 负责构建主 agent，挂载模型、backend、middleware、checkpoint，
-    并把 `SeedAgentConfig` 作为 context schema 透传给 middleware/tool。
-  - `SeedAgentConfig.local.json` 是完整本地 runtime 配置，包含 chat/embedding/Neo4j
-    凭据、middleware 开关和 tool 参数；它覆盖 `memory/README.md` 推荐公开入口
-    `ChunkApplyTool` 与 `KnowledgeManagerCapabilityMiddleware` 的主要 JSON 配置面。
-    真实本地配置默认不提交；`SeedAgentConfig.example.json` 是可复制模板。
+    并把当前 agent 的 `Config` 作为 context schema 透传给 middleware/tool。
+  - `<XxxAgent>Config.local.json` 是完整本地 runtime 配置，包含 chat/embedding/Neo4j
+    凭据、middleware 开关和 tool 参数；真实本地配置默认不提交。
+    `<XxxAgent>Config.example.json` 是可复制模板。`KnowledgeSeedAgent` 的配置覆盖
+    `memory/README.md` 推荐公开入口 `ChunkApplyTool` 与
+    `KnowledgeManagerCapabilityMiddleware` 的主要 JSON 配置面。
   - `protocol.py` 放通讯/任务层共享契约。
   - `Models/` 放模型初始化和旧兼容模型配置。
   - `middlewares/` 放中间件和中间件配置 JSON。
@@ -79,23 +83,39 @@ LANGVIDEO/
   - 面向用户/前端的聊天入口是 `POST /user/chat`。`mode=direct` 会把文本、
     content blocks、图片 URL/data URL 等归一成 user message 并代理目标
     AgentServer `/invoke`；`mode=mail` 会构造 `AgentMail` 写入目标 inbox。
+    邮件投递后，MainServer 会在目标 AgentServer 在线时自动触发或排队重试一轮
+    mail wake invocation，让 `receive_messages` 中间件立刻拉取 inbox。
     AgentServer 注册时应把 `service_url` 写入 metadata，便于 MainServer 代理。
   - 前端可通过 `GET/PUT /user/chat/config/{agent_name}` 独立管理默认
     `thread_id`、`run_id`、`stream_mode` 和 `version`；请求级参数会覆盖默认配置。
-  - agent 发现和通讯 scope 由 MainServer 中心配置管理；默认本地配置是
+  - agent 发现和通讯关系由 MainServer 的全局 `communication.spaces` 管理；默认本地配置是
     `MainServer/config/agents.local.json`，示例为 `MainServer/config/agents.example.json`。
-  - scope 可以是 `None`、扁平 agent name 列表，也可以是嵌套列表；MainServer
-    保存原始结构，路由判断时递归解析出可达 agent name。
-  - 后端管理接口支持读取/修改中心配置、读取/修改单个 agent scope，并从
-    `SeedAgent` 模板复制创建新 agent 目录。
+  - 每个 space 是一组可互相通讯的 agent；多个 space 可以重叠，通讯边由“是否至少
+    共享一个 space”推导。没有配置任何 space 时，兼容为已注册 agent 全可达。
+  - 后端管理接口支持读取/修改中心配置、读取/修改单个 agent scope、读取/修改
+    `workspace/brain/AGENTS.md`，并从 `SeedAgent` 或 `KnowledgeSeedAgent`
+    模板复制创建新 agent 目录。
   - 复制新 agent 时不复制 `Agent/store`、mail、pycache 等运行态内容；也可通过
     `POST /admin/agents/{agent_name}/runtime/clear` 手动清理本地缓存和临时数据库。
+- `frontend/`
+  - React + Vite 管理台，默认通过 `/api` proxy 连接本地 MainServer。
+  - 支持新建/删除 Agent、用图编辑全局通讯空间、持久化 agent 卡片位置、查看邮件和
+    运行状态、改 Agent runtime 配置、改顶层入口 `brain/AGENTS.md`、配置独立
+    `thread_id/run_id`、并进入 Agent 对话。
+  - Agent 图中同一空间内的成员自动连线；框选图上的多个 Agent 会加入当前空间。
+  - 对话内容缓存在 MainServer `ui.chat_sessions`，切换页面或重新点开 agent 后不会丢失。
+  - 对话页在同一界面展示 agent 行为流，但只渲染消息和工具调用卡片，不裸露完整
+    status/update payload。
+  - “清缓存”按钮只清 agent checkpoint 数据，并清空该 agent 的前端历史对话缓存；
+    不删除 mail、knowledge 或 memory cache。
+  - UI 中的 `thread_id/run_id` 只控制对话 invocation；Agent 记忆图身份仍由
+    runtime config 的 `knowledgeRunId` 管理。
 - `workspace/skills/agent-browser/SKILL.md`
   - agent 侧浏览器自动化入口。
   - 只是 discovery stub，真正的浏览器流程由 `agent-browser skills get core` 提供。
 - `memory/`
   - 复制进当前项目的记忆管理包。
-  - 当前通过 SeedAgent 的 bridge 使用公开入口 `ChunkApplyTool` 和
+  - 当前通过 KnowledgeSeedAgent 的 bridge 使用公开入口 `ChunkApplyTool` 和
     `KnowledgeManagerCapabilityMiddleware`。
 
 ## Tool / Middleware 约束

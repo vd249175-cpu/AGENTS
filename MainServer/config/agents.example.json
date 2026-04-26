@@ -2,7 +2,7 @@
   "agents": {
     "SeedAgent": {
       "chat": {
-        "run_id": "seedagent-run",
+        "run_id": null,
         "stream_mode": [
           "messages",
           "updates",
@@ -12,8 +12,47 @@
         "version": "v2"
       },
       "enabled": true,
-      "scope": null,
       "template": "SeedAgent"
+    },
+    "KnowledgeSeedAgent": {
+      "chat": {
+        "run_id": null,
+        "stream_mode": [
+          "messages",
+          "updates",
+          "custom"
+        ],
+        "thread_id": "default",
+        "version": "v2"
+      },
+      "enabled": true,
+      "template": "KnowledgeSeedAgent"
     }
+  },
+  "communication": {
+    "spaces": [
+      {
+        "color": "#2563eb",
+        "id": "main",
+        "members": [
+          "SeedAgent",
+          "KnowledgeSeedAgent"
+        ],
+        "name": "Main"
+      }
+    ]
+  },
+  "ui": {
+    "agent_positions": {
+      "KnowledgeSeedAgent": {
+        "x": 430,
+        "y": 180
+      },
+      "SeedAgent": {
+        "x": 170,
+        "y": 180
+      }
+    },
+    "chat_sessions": {}
   }
 }

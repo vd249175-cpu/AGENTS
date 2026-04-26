@@ -1,23 +1,35 @@
 import unittest
 
-from Deepagents.SeedAgent.Agent.MainAgent import Config, build_middlewares, render_system_prompt
+from Deepagents.SeedAgent.Agent.MainAgent import Config, EXAMPLE_CONFIG_PATH, build_middlewares, render_system_prompt
 from Deepagents.SeedAgent.Agent.middlewares.knowledge_ingest import KnowledgeIngestMiddleware
 from Deepagents.SeedAgent.Agent.server.memory_bridge import build_chunk_apply_config
 from Deepagents.SeedAgent.Agent.server.memory_bridge import build_knowledge_manager_config_payload
 from Deepagents.SeedAgent.AgentServer.service import load_service_config
+from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import Config as KnowledgeSeedConfig
+from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import EXAMPLE_CONFIG_PATH as KNOWLEDGE_EXAMPLE_CONFIG_PATH
 
 
 class SeedAgentConfigTests(unittest.TestCase):
-    def test_example_config_loads_as_complete_runtime_config(self) -> None:
-        config = Config.load_config_seed_agent()
+    def test_seed_example_config_loads_as_general_runtime_config(self) -> None:
+        config = Config.load_config_seed_agent(EXAMPLE_CONFIG_PATH)
 
         self.assertEqual(config.agentName, "SeedAgent")
+        self.assertEqual(config.agentRole, "general seed agent")
         self.assertEqual(config.chatModelProvider, "openai")
         self.assertEqual(config.neo4jUri, "neo4j://localhost:7687")
-        self.assertTrue(config.enableKnowledgeIngestMiddleware)
+        self.assertFalse(config.enableKnowledgeManagerMiddleware)
+        self.assertFalse(config.enableKnowledgeIngestMiddleware)
         self.assertEqual(config.chunkHistoryLineCount, 4)
         self.assertEqual(config.graphQueryKeywordTopK, 6)
-        self.assertIn("SeedAgent", render_system_prompt(config))
+        self.assertIsNone(render_system_prompt(config))
+
+    def test_knowledge_seed_keeps_memory_tools_enabled(self) -> None:
+        config = KnowledgeSeedConfig.load_config_knowledge_seed_agent(KNOWLEDGE_EXAMPLE_CONFIG_PATH)
+
+        self.assertEqual(config.agentName, "KnowledgeSeedAgent")
+        self.assertTrue(config.enableKnowledgeManagerMiddleware)
+        self.assertTrue(config.enableKnowledgeIngestMiddleware)
+        self.assertIn("manage_knowledge", config.agentResponsibilities[3])
 
     def test_ingest_tool_is_owned_by_middleware(self) -> None:
         middleware = KnowledgeIngestMiddleware(runingConfig=KnowledgeIngestMiddleware.config(agentName="SeedAgent"))
@@ -26,11 +38,12 @@ class SeedAgentConfigTests(unittest.TestCase):
         self.assertEqual([tool.name for tool in middleware.middleware.tools], ["ingest_knowledge_document"])
 
     def test_top_level_build_adds_no_free_tools_for_ingest_only(self) -> None:
-        config = Config.load_config_seed_agent().model_copy(
+        config = Config.load_config_seed_agent(EXAMPLE_CONFIG_PATH).model_copy(
             update={
                 "enableMemoryMiddleware": False,
                 "enableSkillsMiddleware": False,
                 "enableKnowledgeManagerMiddleware": False,
+                "enableKnowledgeIngestMiddleware": True,
                 "enableReceiveMessagesMiddleware": False,
                 "enableSendMessagesMiddleware": False,
                 "enableAgentStepTraceMiddleware": False,
@@ -50,7 +63,7 @@ class SeedAgentConfigTests(unittest.TestCase):
         self.assertEqual(service_config.port, 8010)
 
     def test_chunk_apply_config_maps_readme_public_fields(self) -> None:
-        config = Config.load_config_seed_agent().model_copy(
+        config = Config.load_config_seed_agent(EXAMPLE_CONFIG_PATH).model_copy(
             update={
                 "knowledgeRunId": "SeedAgent-knowledge",
                 "chunkApplyDeriveDocumentRunId": False,
@@ -71,7 +84,7 @@ class SeedAgentConfigTests(unittest.TestCase):
         self.assertFalse(chunk_config.persist_keyword_embeddings)
 
     def test_knowledge_manager_payload_maps_readme_public_fields(self) -> None:
-        config = Config.load_config_seed_agent().model_copy(
+        config = Config.load_config_seed_agent(EXAMPLE_CONFIG_PATH).model_copy(
             update={
                 "knowledgeRunId": "SeedAgent-knowledge",
                 "graphQueryKeywordTopK": 8,

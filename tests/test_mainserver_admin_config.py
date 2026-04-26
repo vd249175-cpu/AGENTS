@@ -18,30 +18,43 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.main_server = main_server
         self.main_server._registry.clear()
         self.main_server._mailboxes.clear()
+        self.main_server._mail_log.clear()
         self.client = TestClient(main_server.app)
 
     def tearDown(self) -> None:
         os.environ.pop("MAIN_SERVER_AGENT_CONFIG", None)
 
-    def test_nested_scope_is_resolved_by_mainserver_config(self) -> None:
+    def test_communication_spaces_create_venn_style_peer_sets(self) -> None:
         response = self.client.put(
-            "/admin/agents/SeedAgent/scope",
-            json={"scope": [[], "WorkerAgent", ["ReviewAgent", []]]},
+            "/admin/communication",
+            json={
+                "spaces": [
+                    {"id": "left", "name": "Left", "members": ["AgentA", "AgentBridge"]},
+                    {"id": "right", "name": "Right", "members": ["AgentBridge", "AgentB"]},
+                ]
+            },
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["resolved_scope"], ["WorkerAgent", "ReviewAgent"])
+        edges = {(edge["from"], edge["to"]) for edge in response.json()["edges"]}
+        self.assertEqual(edges, {("AgentA", "AgentBridge"), ("AgentB", "AgentBridge")})
 
-        for agent_name in ("SeedAgent", "WorkerAgent", "ReviewAgent", "OtherAgent"):
+        for agent_name in ("AgentA", "AgentBridge", "AgentB"):
             response = self.client.post("/agents/register", json={"agent_name": agent_name})
             self.assertEqual(response.status_code, 200)
 
-        response = self.client.get("/agents/peers/SeedAgent")
+        response = self.client.get("/agents/peers/AgentBridge")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["peers"], ["WorkerAgent", "ReviewAgent"])
+        self.assertEqual(response.json()["peers"], ["AgentA", "AgentB"])
 
-    def test_send_and_recv_use_nested_scope(self) -> None:
-        self.client.put("/admin/agents/SeedAgent/scope", json={"scope": [[], "WorkerAgent", []]})
-        self.client.put("/admin/agents/WorkerAgent/scope", json={"scope": [[], "SeedAgent", []]})
+        response = self.client.get("/agents/peers/AgentA")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["peers"], ["AgentBridge"])
+
+    def test_send_and_recv_use_global_communication_spaces(self) -> None:
+        self.client.put(
+            "/admin/communication",
+            json={"spaces": [{"id": "main", "members": ["SeedAgent", "WorkerAgent"]}]},
+        )
 
         for agent_name in ("SeedAgent", "WorkerAgent", "OtherAgent"):
             response = self.client.post("/agents/register", json={"agent_name": agent_name})
@@ -68,7 +81,50 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["from"], "SeedAgent")
 
-    def test_registration_scope_still_works_without_admin_config(self) -> None:
+    def test_send_wakes_registered_receiver_service(self) -> None:
+        calls = []
+
+        def fake_post_json(url, payload, timeout):
+            calls.append({"url": url, "payload": payload, "timeout": timeout})
+            return {"ok": True, "reply": "handled inbox"}
+
+        original_post_json = self.main_server.post_json
+        self.main_server.post_json = fake_post_json
+        self.addCleanup(setattr, self.main_server, "post_json", original_post_json)
+
+        self.client.put(
+            "/admin/communication",
+            json={"spaces": [{"id": "main", "members": ["AgentA", "AgentB"]}]},
+        )
+        self.client.post("/agents/register", json={"agent_name": "AgentA"})
+        self.client.post(
+            "/agents/register",
+            json={"agent_name": "AgentB", "metadata": {"service_url": "http://127.0.0.1:8011"}},
+        )
+        self.client.post(
+            "/agents/AgentB/status",
+            json={"status": "running", "phase": "ready", "step": "waiting"},
+        )
+
+        response = self.client.post(
+            "/send",
+            json={
+                "message_id": "wake-1",
+                "from": "AgentA",
+                "to": "AgentB",
+                "type": "message",
+                "content": "please handle this",
+                "attachments": [],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["wake_scheduled"])
+        self.assertEqual(calls[0]["url"], "http://127.0.0.1:8011/invoke")
+        self.assertEqual(calls[0]["payload"]["run_id"], "mail-wake-1")
+        self.assertEqual(calls[0]["payload"]["stream_mode"], ["updates", "custom", "messages"])
+
+    def test_empty_communication_spaces_default_to_all_registered_peers(self) -> None:
         self.client.post(
             "/agents/register",
             json={"agent_name": "AgentA", "scope": [[], "AgentB", []]},
@@ -78,7 +134,7 @@ class MainServerAdminConfigTests(unittest.TestCase):
 
         response = self.client.get("/agents/peers/AgentA")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["peers"], ["AgentB"])
+        self.assertEqual(response.json()["peers"], ["AgentB", "AgentC"])
 
     def test_user_chat_mail_builds_agent_mail(self) -> None:
         response = self.client.post(
@@ -213,6 +269,149 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.assertFalse(mail_file.exists())
         self.assertTrue(knowledge_file.exists())
         self.assertTrue((agent_root / "Agent" / "store" / "memory" / "cache").is_dir())
+
+    def test_admin_clear_runtime_can_remove_only_checkpoints(self) -> None:
+        agent_name = "CheckpointCleanupAgent"
+        agent_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / agent_name
+        shutil.rmtree(agent_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, agent_root, True)
+
+        checkpoint_file = agent_root / "Agent" / "store" / "checkpoints" / "graph.sqlite"
+        memory_checkpoint_file = agent_root / "Agent" / "store" / "memory" / "checkpoint" / "memory.sqlite"
+        cache_file = agent_root / "Agent" / "store" / "memory" / "cache" / "chunk_cache.sqlite3"
+        mail_file = agent_root / "workspace" / "mail" / "user__test" / "message.md"
+        knowledge_file = agent_root / "workspace" / "knowledge" / "keep.txt"
+        for path in (checkpoint_file, memory_checkpoint_file, cache_file, mail_file, knowledge_file):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("data", encoding="utf-8")
+
+        response = self.client.post(
+            f"/admin/agents/{agent_name}/runtime/clear",
+            json={
+                "include_store": False,
+                "include_mail": False,
+                "include_knowledge": False,
+                "include_checkpoints": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(checkpoint_file.exists())
+        self.assertFalse(memory_checkpoint_file.exists())
+        self.assertTrue(cache_file.exists())
+        self.assertTrue(mail_file.exists())
+        self.assertTrue(knowledge_file.exists())
+        self.assertTrue(checkpoint_file.parent.is_dir())
+        self.assertTrue(memory_checkpoint_file.parent.is_dir())
+
+    def test_admin_clear_runtime_clears_frontend_agent_history(self) -> None:
+        agent_name = "HistoryCleanupAgent"
+        agent_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / agent_name
+        shutil.rmtree(agent_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, agent_root, True)
+        checkpoint_file = agent_root / "Agent" / "store" / "checkpoints" / "graph.sqlite"
+        checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_file.write_text("data", encoding="utf-8")
+
+        self.client.post("/agents/register", json={"agent_name": agent_name})
+        self.client.post(
+            f"/agents/{agent_name}/event",
+            json={"event": "mail_wake_success", "reply": "done"},
+        )
+        self.client.post(
+            "/send",
+            json={
+                "message_id": "history-1",
+                "from": agent_name,
+                "to": "OtherAgent",
+                "type": "message",
+                "content": "hello",
+                "attachments": [],
+            },
+        )
+        self.client.put(
+            "/admin/ui-state",
+            json={
+                "agent_positions": {},
+                "chat_sessions": {agent_name: {"messages": [{"role": "user", "content": "hello"}]}},
+            },
+        )
+
+        response = self.client.post(
+            f"/admin/agents/{agent_name}/runtime/clear",
+            json={
+                "include_store": False,
+                "include_mail": False,
+                "include_knowledge": False,
+                "include_checkpoints": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(checkpoint_file.exists())
+        monitor = self.client.get("/admin/monitor").json()
+        agent = next(item for item in monitor["agents"] if item["agent_name"] == agent_name)
+        self.assertEqual(agent["events"], [])
+        self.assertEqual(monitor["recent_mail"], [])
+        ui = self.client.get("/admin/ui-state").json()["ui"]
+        self.assertNotIn(agent_name, ui["chat_sessions"])
+
+    def test_runtime_config_endpoint_updates_prompt_fields(self) -> None:
+        agent_name = "RuntimeConfigAgent"
+        agent_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / agent_name
+        config_file = agent_root / "Agent" / f"{agent_name}Config.example.json"
+        shutil.rmtree(agent_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, agent_root, True)
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(
+            '{"agentName":"RuntimeConfigAgent","systemPromptExtra":"","knowledgeRunId":"RuntimeConfigAgent-knowledge"}',
+            encoding="utf-8",
+        )
+
+        response = self.client.patch(
+            f"/admin/agents/{agent_name}/runtime-config",
+            json={
+                "systemPromptExtra": "新的提示词",
+                "knowledgeRunId": "RuntimeConfigAgent-knowledge-v2",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["uses_local"])
+        self.assertEqual(payload["config"]["systemPromptExtra"], "新的提示词")
+        self.assertEqual(payload["config"]["knowledgeRunId"], "RuntimeConfigAgent-knowledge-v2")
+
+    def test_brain_prompt_endpoint_reads_and_writes_agents_md(self) -> None:
+        agent_name = "BrainPromptAgent"
+        agent_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / agent_name
+        brain_file = agent_root / "workspace" / "brain" / "AGENTS.md"
+        shutil.rmtree(agent_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, agent_root, True)
+        brain_file.parent.mkdir(parents=True, exist_ok=True)
+        brain_file.write_text("old brain\n", encoding="utf-8")
+
+        response = self.client.get(f"/admin/agents/{agent_name}/brain")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["content"], "old brain\n")
+
+        response = self.client.put(
+            f"/admin/agents/{agent_name}/brain",
+            json={"content": "new brain"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["content"], "new brain\n")
+        self.assertEqual(brain_file.read_text(encoding="utf-8"), "new brain\n")
+
+    def test_available_agents_includes_filesystem_seedagent_when_not_registered(self) -> None:
+        response = self.client.get("/admin/agents/available")
+
+        self.assertEqual(response.status_code, 200)
+        names = {agent["agent_name"]: agent for agent in response.json()["agents"]}
+        self.assertIn("SeedAgent", names)
+        self.assertFalse(names["SeedAgent"]["registered"])
+        self.assertEqual(names["SeedAgent"]["status"], "available")
 
 
 if __name__ == "__main__":
