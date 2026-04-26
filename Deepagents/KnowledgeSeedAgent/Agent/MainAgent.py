@@ -46,7 +46,6 @@ def default_config_path() -> Path:
         return DEFAULT_CONFIG_PATH
     return EXAMPLE_CONFIG_PATH
 
-
 class Config(StrictConfig):
     agentName: str = Field(default="KnowledgeSeedAgent")
     agentRole: str = Field(default="knowledge seed agent")
