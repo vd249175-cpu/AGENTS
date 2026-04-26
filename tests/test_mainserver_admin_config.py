@@ -356,7 +356,7 @@ class MainServerAdminConfigTests(unittest.TestCase):
         ui = self.client.get("/admin/ui-state").json()["ui"]
         self.assertNotIn(agent_name, ui["chat_sessions"])
 
-    def test_runtime_config_endpoint_updates_prompt_fields(self) -> None:
+    def test_runtime_config_endpoint_updates_runtime_fields(self) -> None:
         agent_name = "RuntimeConfigAgent"
         agent_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / agent_name
         config_file = agent_root / "Agent" / f"{agent_name}Config.example.json"
@@ -364,23 +364,53 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, agent_root, True)
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.write_text(
-            '{"agentName":"RuntimeConfigAgent","systemPromptExtra":"","knowledgeRunId":"RuntimeConfigAgent-knowledge"}',
+            '{"agentName":"RuntimeConfigAgent","knowledgeRunId":"RuntimeConfigAgent-knowledge"}',
             encoding="utf-8",
         )
 
         response = self.client.patch(
             f"/admin/agents/{agent_name}/runtime-config",
             json={
-                "systemPromptExtra": "新的提示词",
                 "knowledgeRunId": "RuntimeConfigAgent-knowledge-v2",
+                "enableSendMessagesMiddleware": False,
             },
         )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload["uses_local"])
-        self.assertEqual(payload["config"]["systemPromptExtra"], "新的提示词")
         self.assertEqual(payload["config"]["knowledgeRunId"], "RuntimeConfigAgent-knowledge-v2")
+        self.assertFalse(payload["config"]["enableSendMessagesMiddleware"])
+
+    def test_agent_card_endpoint_reads_and_writes_public_card(self) -> None:
+        agent_name = "CardConfigAgent"
+        agent_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / agent_name
+        card_file = agent_root / "AgentServer" / "AgentCard.json"
+        shutil.rmtree(agent_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, agent_root, True)
+        card_file.parent.mkdir(parents=True, exist_ok=True)
+        card_file.write_text(
+            '{"agent_name":"CardConfigAgent","capabilities":[{"title":"Old","content":"old public card"}]}',
+            encoding="utf-8",
+        )
+
+        response = self.client.get(f"/admin/agents/{agent_name}/card")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["card"]["capabilities"][0]["title"], "Old")
+
+        response = self.client.put(
+            f"/admin/agents/{agent_name}/card",
+            json={
+                "agent_name": "WrongAgent",
+                "capabilities": [{"title": "New", "content": "new public card"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["card"]["agent_name"], agent_name)
+        self.assertEqual(payload["card"]["capabilities"][0]["content"], "new public card")
+        self.assertEqual(payload["card"]["agent_name"], self.client.get(f"/admin/agents/{agent_name}/card").json()["card"]["agent_name"])
 
     def test_brain_prompt_endpoint_reads_and_writes_agents_md(self) -> None:
         agent_name = "BrainPromptAgent"

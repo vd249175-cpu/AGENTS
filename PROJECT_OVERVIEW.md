@@ -93,6 +93,7 @@ LANGVIDEO/
   - 每个 space 是一组可互相通讯的 agent；多个 space 可以重叠，通讯边由“是否至少
     共享一个 space”推导。没有配置任何 space 时，兼容为已注册 agent 全可达。
   - 后端管理接口支持读取/修改中心配置、读取/修改单个 agent scope、读取/修改
+    给其他 agent 看的 `AgentServer/AgentCard.json`，以及真正进入当前 agent 上下文的
     `workspace/brain/AGENTS.md`，并从 `SeedAgent` 或 `KnowledgeSeedAgent`
     模板复制创建新 agent 目录。
   - 复制新 agent 时不复制 `Agent/store`、mail、pycache 等运行态内容；也可通过
@@ -100,8 +101,8 @@ LANGVIDEO/
 - `frontend/`
   - React + Vite 管理台，默认通过 `/api` proxy 连接本地 MainServer。
   - 支持新建/删除 Agent、用图编辑全局通讯空间、持久化 agent 卡片位置、查看邮件和
-    运行状态、改 Agent runtime 配置、改顶层入口 `brain/AGENTS.md`、配置独立
-    `thread_id/run_id`、并进入 Agent 对话。
+    运行状态、改 Agent runtime 配置、改公开 `AgentCard.json`、改顶层入口
+    `brain/AGENTS.md`、配置独立 `thread_id/run_id`、并进入 Agent 对话。
   - Agent 图中同一空间内的成员自动连线；框选图上的多个 Agent 会加入当前空间。
   - 对话内容缓存在 MainServer `ui.chat_sessions`，切换页面或重新点开 agent 后不会丢失。
   - 对话页在同一界面展示 agent 行为流，但只渲染消息和工具调用卡片，不裸露完整

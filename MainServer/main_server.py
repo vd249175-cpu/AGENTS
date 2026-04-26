@@ -32,8 +32,8 @@ from MainServer.admin_config import (
     update_agent_config,
 )
 from MainServer.agent_templates import clear_agent_runtime, create_agent_from_template, list_agent_directories
-from MainServer.agent_templates import delete_agent_directory, read_agent_brain_prompt, read_agent_runtime_config
-from MainServer.agent_templates import write_agent_brain_prompt, write_agent_runtime_config
+from MainServer.agent_templates import delete_agent_directory, read_agent_brain_prompt, read_agent_card, read_agent_runtime_config
+from MainServer.agent_templates import write_agent_brain_prompt, write_agent_card, write_agent_runtime_config
 from MainServer.mail_router import route_message_assets
 from MainServer.protocol import make_message
 from MainServer.state import AgentMail, MessageType
@@ -911,6 +911,26 @@ async def admin_patch_agent_runtime_config(agent_name: str, payload: dict[str, A
 async def admin_replace_agent_runtime_config(agent_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         result = write_agent_runtime_config(agent_name, payload, merge=False)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "agent_name": agent_name, **result}
+
+
+@app.get("/admin/agents/{agent_name}/card")
+async def admin_get_agent_card(agent_name: str) -> dict[str, Any]:
+    try:
+        result = read_agent_card(agent_name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "agent_name": agent_name, **result}
+
+
+@app.put("/admin/agents/{agent_name}/card")
+async def admin_replace_agent_card(agent_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        result = write_agent_card(agent_name, payload)
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "agent_name": agent_name, **result}

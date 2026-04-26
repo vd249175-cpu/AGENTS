@@ -65,7 +65,7 @@ LANGVIDEO/
 │   ├── __init__.py
 │   ├── __main__.py
 │   ├── service.py                # FastAPI app + lifespan + MainServer 上报
-│   ├── AgentCard.json
+│   ├── AgentCard.json            # 给其他 agent 看的公开能力卡片，不是当前 agent 提示词
 │   └── ServiceConfig.json
 ├── Agent/                        # Layer 2：Agent 组装
 │   ├── __init__.py
@@ -170,6 +170,8 @@ CollaborationState       # {"agentcard", "agent_messages"}
 | `GET /agents/peers/{agent_name}` | 发现 | 返回当前 agent 可见的 peer |
 | `POST /user/chat` | 用户入口 | 把用户输入归一成 user message；`mode=direct` 代理目标 AgentServer `/invoke`，`mode=mail` 写入目标 agent inbox |
 | `GET/PUT /user/chat/config/{agent_name}` | 用户会话配置 | 前端读写默认 `thread_id`、`run_id`、`stream_mode`、`version` |
+| `GET/PUT /admin/agents/{agent_name}/card` | Agent 公开卡片 | 读写 `AgentServer/AgentCard.json`，用于向其他 agent 展示能力 |
+| `GET/PUT /admin/agents/{agent_name}/brain` | Agent 顶层提示词 | 读写 `workspace/brain/AGENTS.md`，这是当前 agent 真正进入上下文的行为入口 |
 
 ### 5.2 SDK 约束
 
@@ -260,6 +262,7 @@ MainServer 后端管理接口：
 | `/admin/monitor` | `GET` | 返回当前 agent 状态、mailbox 计数和最近邮件记录 |
 | `/admin/agents/create` | `POST` | 从 `SeedAgent`、`KnowledgeSeedAgent` 或指定模板复制创建新 Agent 目录，并写入中心配置 |
 | `/admin/agents/{agent_name}/config` | `GET/PATCH/PUT` | 读取、合并或替换单个 Agent 的配置 |
+| `/admin/agents/{agent_name}/card` | `GET/PUT` | 读取或替换 `AgentServer/AgentCard.json` 公开能力卡片 |
 | `/admin/agents/{agent_name}/brain` | `GET/PUT` | 读取或替换 `workspace/brain/AGENTS.md` 常驻 brain 提示词 |
 | `/admin/agents/{agent_name}/scope` | `GET/PUT` | legacy 兼容接口；新通讯图不依赖它 |
 | `/admin/agents/{agent_name}/runtime/clear` | `POST` | 按参数清理本地运行态目录；前端“清缓存”按钮只清 checkpoint 数据 |

@@ -132,7 +132,7 @@ def write_agent_card(agent_name: str, value: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("agent card must be an object")
     target_name = validate_agent_name(agent_name)
     card = dict(value)
-    card.setdefault("agent_name", target_name)
+    card["agent_name"] = target_name
     path = agent_card_path(target_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

@@ -383,12 +383,7 @@ function App() {
   const [runId, setRunId] = useState("");
   const [streamMode, setStreamMode] = useState(pretty(DEFAULT_STREAM_MODE));
 
-  const [agentRole, setAgentRole] = useState("");
-  const [agentDescription, setAgentDescription] = useState("");
-  const [agentResponsibilities, setAgentResponsibilities] = useState("");
-  const [systemPromptExtra, setSystemPromptExtra] = useState("");
-  const [defaultRunId, setDefaultRunId] = useState("");
-  const [knowledgeRunId, setKnowledgeRunId] = useState("");
+  const [agentCardJson, setAgentCardJson] = useState("{}");
   const [brainPrompt, setBrainPrompt] = useState("");
   const [mainConfigJson, setMainConfigJson] = useState("{}");
   const [runtimeConfigJson, setRuntimeConfigJson] = useState("{}");
@@ -518,10 +513,11 @@ function App() {
   }
 
   async function loadAgent(agentName, sessions = chatSessions) {
-    const [chat, main, runtimeResult, brainResult] = await Promise.allSettled([
+    const [chat, main, runtimeResult, cardResult, brainResult] = await Promise.allSettled([
       api(`/user/chat/config/${agentName}`),
       api(`/admin/agents/${agentName}/config`),
       api(`/admin/agents/${agentName}/runtime-config`),
+      api(`/admin/agents/${agentName}/card`),
       api(`/admin/agents/${agentName}/brain`),
     ]);
 
@@ -536,12 +532,7 @@ function App() {
 
     const runtimeConfig = runtimeResult.status === "fulfilled" ? runtimeResult.value.config || {} : {};
     setRuntimeConfigJson(pretty(runtimeConfig));
-    setAgentRole(runtimeConfig.agentRole || "");
-    setAgentDescription(runtimeConfig.agentDescription || "");
-    setAgentResponsibilities((runtimeConfig.agentResponsibilities || []).join("\n"));
-    setSystemPromptExtra(runtimeConfig.systemPromptExtra || "");
-    setDefaultRunId(runtimeConfig.defaultRunId || "");
-    setKnowledgeRunId(runtimeConfig.knowledgeRunId || "");
+    setAgentCardJson(pretty(cardResult.status === "fulfilled" ? cardResult.value.card || {} : {}));
     setBrainPrompt(brainResult.status === "fulfilled" ? brainResult.value.content || "" : "");
     const session = sessions?.[agentName] || {};
     setChatMessages(normalizeChatMessages(session.messages));
@@ -799,21 +790,14 @@ function App() {
     });
   }
 
-  function savePrompt() {
+  function saveAgentCard() {
     if (!selectedAgent) return;
-    run("Saving prompt", async () => {
-      await api(`/admin/agents/${selectedAgent}/runtime-config`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          agentRole,
-          agentDescription,
-          agentResponsibilities: agentResponsibilities.split("\n").map((item) => item.trim()).filter(Boolean),
-          systemPromptExtra,
-          defaultRunId,
-          knowledgeRunId: knowledgeRunId || null,
-        }),
+    run("Saving agent card", async () => {
+      const result = await api(`/admin/agents/${selectedAgent}/card`, {
+        method: "PUT",
+        body: JSON.stringify(parseJson(agentCardJson, "AgentCard")),
       });
-      await loadAgent(selectedAgent);
+      setAgentCardJson(pretty(result.card || {}));
     });
   }
 
@@ -1330,23 +1314,11 @@ function App() {
         {activeTab === "prompt" && (
           <section className="prompt-view prompt-split">
             <div>
-              <div className="form-grid">
-                <label>Role</label>
-                <input value={agentRole} onChange={(event) => setAgentRole(event.target.value)} />
-                <label>Description</label>
-                <textarea value={agentDescription} onChange={(event) => setAgentDescription(event.target.value)} />
-                <label>Responsibilities</label>
-                <textarea className="tall" value={agentResponsibilities} onChange={(event) => setAgentResponsibilities(event.target.value)} />
-                <label>System Extra</label>
-                <textarea className="tall" value={systemPromptExtra} onChange={(event) => setSystemPromptExtra(event.target.value)} />
-                <label>Default Run ID</label>
-                <input value={defaultRunId} onChange={(event) => setDefaultRunId(event.target.value)} />
-                <label>Knowledge Run ID</label>
-                <input value={knowledgeRunId} onChange={(event) => setKnowledgeRunId(event.target.value)} />
-              </div>
-              <button onClick={savePrompt}>
+              <label>AgentCard.json</label>
+              <textarea className="code brain-editor" value={agentCardJson} onChange={(event) => setAgentCardJson(event.target.value)} />
+              <button onClick={saveAgentCard}>
                 <Save size={16} />
-                保存运行提示词
+                保存卡片
               </button>
             </div>
             <div>
