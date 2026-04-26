@@ -82,7 +82,6 @@ class Config(StrictConfig):
     neo4jUsername: str = Field(default="neo4j")
     neo4jPassword: str = Field(default="")
     neo4jDatabase: str | None = Field(default=None)
-
     enableMemoryMiddleware: bool = Field(default=True)
     enableSkillsMiddleware: bool = Field(default=True)
     enableKnowledgeManagerMiddleware: bool = Field(default=True)
