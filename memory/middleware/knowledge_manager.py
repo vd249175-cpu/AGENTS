@@ -149,8 +149,8 @@ middleware_capability_prompts = [
     AffectedPrompt(
         name="knowledge_manager.guidance",
         prompt=(
-            "如果当前任务需要查询、整理、修正或关联知识库内容，把目标交给 manage_knowledge。"
-            "主 agent 只需要写清 target，不要替内部知识管理者规划底层工具步骤。"
+            "你拥有一个graphrag知识库，你可以通过manage_knowledge工具来管理知识库，查询信息，梳理知识关系，将一些知识添加到知识库中，修复错误观念等等"
+            "你只需要写清 target，不要替内部知识管理者规划底层工具步骤。"
             "收到结果后，根据 message 和 useful_items 继续完成当前对话任务。"
         ),
     )

@@ -17,9 +17,10 @@ from ..tools.ingest_knowledge_tool import SubState as IngestKnowledgeToolState
 class Config(IngestKnowledgeToolConfig, MiddlewareRuningConfig):
     guidancePrompt: str = Field(
         default=(
-            "当用户要求把 /workspace/knowledge 中的长文档写入知识库时，"
-            "使用 ingest_knowledge_document。不要手工模拟入库结果；工具完成后可继续使用 "
-            "manage_knowledge 查询或修正记忆内容。"
+            "如果你需要记忆长文档，请使用ingest_knowledge_document工具将文档写入graphrag知识库中"
+            "长文档的存储位置统一为 /workspace/knowledge，"
+            "当文档入库后，你可以通过manage_knowledge 查询或操作识库中的内容。"
+            "manage_knowledge 工具还可以记住零碎的关键内容，也可以将其放入知识库中的合适位置"
         )
     )
 

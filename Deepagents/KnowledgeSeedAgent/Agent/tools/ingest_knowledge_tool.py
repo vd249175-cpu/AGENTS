@@ -60,7 +60,7 @@ class ToolSchema:
     name = "ingest_knowledge_document"
     args_schema = Input
     description = (
-        "将 /workspace/knowledge 中的长文档读取、语义切分并写入记忆图。"
+        "将 /workspace/knowledge 中的长文档读取、语义切分并写入graphrag知识库。"
         "只接受 /workspace/knowledge 下的文件；完成后可继续用 manage_knowledge 管理记忆。"
     )
     toolfeedback = ToolFeedback

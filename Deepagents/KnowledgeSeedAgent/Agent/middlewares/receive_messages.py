@@ -20,7 +20,7 @@ MIDDLEWARE_DIR = Path(__file__).resolve().parent
 
 class Config(MiddlewareRuningConfig):
     guidancePrompt: str = Field(
-        default="当收到 `<Inbox>` 用户消息时，先阅读内容，再决定是否回复、委派或继续当前任务。"
+        default="当收到 `<Inbox>` 用户消息时，先阅读内容，再决定是否回复、委派或继续当前任务。如果你需要和其他agent交流，你总是需要调用工具，否则交流不会生效"
     )
     maxInboxItems: int = Field(default=20, ge=1)
     peekPeersInGuidance: bool = Field(default=True)
@@ -98,7 +98,7 @@ class Middleware(BaseAgentMiddleware):
         messages = set_named_system_message(
             list(guided.messages),
             name="middleware.receive_messages.peers",
-            text=f"当前可达 peers={peers_text}",
+            text=f"当前可达 peers={peers_text}你可以向他们发送邮件，peers中为他们的agent name",
         )
         return guided.override(messages=messages)
 
