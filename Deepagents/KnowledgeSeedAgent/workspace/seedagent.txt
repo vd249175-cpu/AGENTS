@@ -1,0 +1,4 @@
+Hello SeedAgent,
+
+这是一个发给 SeedAgent 的示例 txt 文件。
+请在收到后回复一段简短确认信息。

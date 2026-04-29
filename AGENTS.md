@@ -27,12 +27,11 @@
 - 浏览器自动化通过 `workspace/skills/agent-browser/SKILL.md` 给 agent 使用，运行在 Docker sandbox 里的 `agent-browser` + Chromium，不是 Codex 自身能力。
 - 模型配置使用项目内 `Deepagents/*/Agent/Models/model_config.json`；该文件包含本地凭据，默认不提交。
 - MainAgent backend 统一通过当前项目定义的 `sandbox.py` 创建。
-- 当前已开始接入复制到本项目的 `memory/` 包；先在 `SeedAgent` 上挂载
+- 记忆能力当前只作为 `KnowledgeSeedAgent` 的知识模板能力接入：它挂载
   `ingest_knowledge_document` 工具和 `manage_knowledge` 中间键，用于把
-  `workspace/knowledge` 中的长文档切分进入记忆图，并管理记忆内容。
-- SeedAgent 的 chunk 入库配置关闭文档级 run_id 派生，确保
-  `ingest_knowledge_document` 和 `manage_knowledge` 共用 `SeedAgent-knowledge`
-  这一套 Agent 知识库。
+  `workspace/knowledge` 中的长文档切分进入记忆图并管理知识内容。
+- `SeedAgent` 只保留基础对话、邮件、skills 和通用记忆上下文能力，不默认挂载
+  chunkApply 或知识管理工具。
 - 旧项目的 `MemoryManage/*`、RAG、索引构建、记忆召回仍不直接迁入骨架；
   记忆能力通过当前 `memory/` 包的 demo 风格 wrapper 接入。
 - demo 规范是当前 middleware/tool 重构的最高实现参照，后续若和旧实现冲突，优先服从 demo 规范再同步其他约束文档。

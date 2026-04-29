@@ -1,23 +1,28 @@
-# LANGVIDEO Agents Frontend
+# LANGVIDEO Agents 前端
 
-React + Vite control panel for the local MainServer.
+这是本地 MainServer 的 React + Vite 控制台。
 
-One-click local startup from the repository root:
+前端的职责比较薄，主要做这些事情：
+
+- 读取和写入 MainServer 状态
+- 查看和编辑 Agent 卡片
+- 查看和编辑 Agent 顶层提示词
+- 修改 Agent 运行时配置
+- 编辑全局通讯图 / scope
+- 查看聊天、邮件和运行细节
+- 进入单个 Agent 对话
+
+`/api/*` 会代理到 `http://127.0.0.1:8000`。
+
+## 启动
+
+仓库根目录一键启动：
 
 ```bash
 ./scripts/start_langvideo.sh
 ```
 
-The script starts MainServer, the Vite frontend, enabled seed agent services,
-and opens `http://127.0.0.1:5173` in the browser.
-
-Run MainServer first:
-
-```bash
-uv run python main.py mainserver
-```
-
-Then run the frontend:
+如果只想单独启动前端：
 
 ```bash
 cd frontend
@@ -25,34 +30,21 @@ npm install
 npm run dev
 ```
 
-Open:
+浏览器地址：
 
 ```text
 http://127.0.0.1:5173
 ```
 
-The dev server proxies `/api/*` to `http://127.0.0.1:8000`.
+## 页面说明
 
-The create form can copy from any available agent directory. `SeedAgent` and
-`KnowledgeSeedAgent` are both knowledge-capable seed templates with document
-ingest and memory management tools.
-The prompt tab separates public `AgentServer/AgentCard.json` from the actual
-agent prompt in `workspace/brain/AGENTS.md`. The config tab shows a merged
-MainServer/runtime view; model service fields save back to the agent runtime
-config, while communication/UI fields stay in MainServer config.
-The graph tab edits global communication spaces. Every member in a space can
-communicate with every other member, and overlapping spaces behave like a Venn
-diagram: shared agents can talk into both spaces while non-shared members remain
-separate unless another space connects them.
-The chat tab stores conversation history in MainServer UI state and shows an
-agent activity stream beside the conversation. The chat lane only renders user
-and agent messages; the detail lane renders filtered message and tool-call cards
-instead of raw status/update payloads.
-Saving runtime config asks the running AgentServer to reload its main agent when
-the service is registered.
-Clearing checkpoints also asks the AgentServer to reload, so the main agent's
-LangGraph sqlite checkpointer reconnects to `Agent/store/checkpoints/langgraph.sqlite3`
-instead of keeping an old deleted file handle.
-The clear-cache button only clears agent checkpoint directories and the saved
-chat/activity history for that agent; it does not remove mail, knowledge, or
-memory cache.
+- 创建页可以从任意已存在的 Agent 目录复制。
+- `SeedAgent` 是普通基础模板。
+- `KnowledgeSeedAgent` 是知识模板，带文档切分入库和知识管理能力。
+- 提示词页把公开的 `AgentServer/AgentCard.json` 和真正进入上下文的 `workspace/brain/AGENTS.md` 分开。
+- 配置页展示的是 MainServer 和 Agent runtime 的合并视图；模型服务类字段会写回 runtime 配置，通讯和 UI 类字段留在 MainServer 配置里。
+- 通讯图页编辑全局通讯空间。空间可以重叠，效果类似维恩图：共享成员可以跨多个空间通讯，不共享的成员不会自动互通。
+- 聊天页会保存历史会话，并把工具调用和 Agent 行为放到右侧细节栏，不直接裸露完整状态 payload。
+- 保存运行时配置后，如果对应 AgentServer 在线，会触发 `/reload-config` 让主 agent 重新加载配置。
+- 清空 checkpoint 后也会触发重载，保证 LangGraph sqlite checkpointer 重新连接到 `Agent/store/checkpoints/langgraph.sqlite3`。
+- “清缓存”只清 checkpoint 和前端保存的聊天历史，不会删邮件、知识或 memory cache。

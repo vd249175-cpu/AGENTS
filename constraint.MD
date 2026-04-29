@@ -24,7 +24,7 @@ chunkApply 或知识管理工具；`KnowledgeSeedAgent` 是知识库模板，默
 LANGVIDEO/
 ├── Deepagents/                  # 多 Agent 服务目录
 │   ├── __init__.py
-│   ├── SeedAgent/               # 知识型种子 Agent，挂文档入库和管理工具
+│   ├── SeedAgent/               # 普通基础 Agent，不默认挂知识入库和管理工具
 │   └── KnowledgeSeedAgent/      # 知识库模板 Agent，挂文档入库和管理工具
 ├── MainServer/                  # 中心化注册 / 路由 / 调度服务
 │   ├── __init__.py
@@ -459,7 +459,7 @@ Agent runtime 完整配置放在 `Deepagents/*/Agent/<XxxAgent>Config.local.json
 | 可以放 | 不可以放 |
 |---|---|
 | Agent 读写的业务文件 | 服务框架说明 |
-| `brain/AGENTS.md` | MainServer 协议文档 |
+| `brain/AGENTS.md` | Agent 顶层提示词与行为入口 |
 | notes / skills / knowledge | 跨 Agent 调度逻辑 |
 
 ---
