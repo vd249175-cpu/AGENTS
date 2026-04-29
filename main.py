@@ -1,4 +1,4 @@
-"""Local entrypoint for LANGVIDEO services."""
+"""Local entrypoint for Long River Agent services."""
 
 import argparse
 

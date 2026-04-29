@@ -1,4 +1,4 @@
-# LANGVIDEO 框架约束
+# Long River Agent 框架约束
 
 > 本文档是当前项目的结构与规则约束。
 > 所有后续开发、新增 Agent、新增协议、重构模块，都必须先对照本文档。
@@ -21,7 +21,7 @@ chunkApply 或知识管理工具；`KnowledgeSeedAgent` 是知识库模板，默
 ## 1. 项目顶层结构
 
 ```text
-LANGVIDEO/
+Long River Agent/
 ├── Deepagents/                  # 多 Agent 服务目录
 │   ├── __init__.py
 │   ├── SeedAgent/               # 普通基础 Agent，不默认挂知识入库和管理工具
@@ -194,9 +194,12 @@ CollaborationState       # {"agentcard", "agent_messages"}
     URL 或 data URL 放进 `attachments`，入口会转换为 `image_url` block。
 - `thread_id` 与历史 `session_id` 等价；若请求未显式传入，入口读取
     `/user/chat/config/{agent_name}` 中的默认 `thread_id/run_id`。
-- 对话入口的 `run_id` 只用于本次 agent invocation / stream 追踪；不要用它自动覆盖
-  Agent runtime config 中的 `knowledgeRunId`。知识图身份由 `knowledgeRunId` 管理，
-  新开 `thread_id` 应清空对话 checkpoint 上下文，但仍可访问同一 agent 的知识库。
+- 对话入口的 `run_id` 不只是展示字段；主 agent 会把 `run_id` 和 `thread_id`
+  拼成真实 LangGraph checkpoint key：`<run_id>:<thread_id>`。因此同一个
+  `thread_id` 在不同 `run_id` 下也会被隔离。
+- 对话入口的 `run_id` 不允许自动覆盖 Agent runtime config 中的 `knowledgeRunId`。
+  知识图身份由 `knowledgeRunId` 管理；新开 `thread_id` 或更换 `run_id` 会隔离
+  对话 checkpoint，但仍可访问同一个 `knowledgeRunId` 对应的知识库。
 - 邮件唤醒必须使用接收方 `/user/chat/config/{agent_name}` 的主 `thread_id/run_id`；
   邮件 metadata 中的 `thread_id/run_id` 只作为审计和 UI 展示信息，不允许覆盖接收方
   checkpoint 指向。不要把邮件处理写入 `mail-*` 临时线程，否则用户回到原对话线程时
@@ -405,7 +408,7 @@ Agent runtime 完整配置放在 `Deepagents/*/Agent/<XxxAgent>Config.local.json
 |---|---|---|
 | `<XxxAgent>Config.local.json` | MainAgent / memory bridge | agent runtime 完整本地配置，默认不提交 |
 | `<XxxAgent>Config.example.json` | MainAgent / template | agent runtime 完整配置示例 |
-| `model_config.json` | 旧兼容 | 旧主 agent 模型结构 |
+| `model_config.json` | 模型结构展示 / 旧兼容 | 旧主 agent 模型结构 |
 | `AgentApi.json` | 旧兼容 | 旧 MainAgent API 配置 |
 | `ToolModel.json` | tools / SubAgent | 工具或子 agent 可选模型 |
 

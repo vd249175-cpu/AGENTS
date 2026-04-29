@@ -4,8 +4,7 @@ __pycache__/
 *$py.class
 .DS_Store
 
-# Local model credentials
-Deepagents/*/Agent/Models/model_config.json
+# Local runtime credentials
 Deepagents/*/Agent/*Config.local.json
 MainServer/config/agents.local.json
 

@@ -1,4 +1,4 @@
-# LANGVIDEO Agents 前端
+# Long River Agent 前端
 
 这是本地 MainServer 的 React + Vite 控制台。
 
@@ -8,7 +8,7 @@
 - 查看和编辑 Agent 卡片
 - 查看和编辑 Agent 顶层提示词
 - 修改 Agent 运行时配置
-- 编辑全局通讯图 / scope
+- 编辑全局通讯图 / 通讯空间
 - 查看聊天、邮件和运行细节
 - 进入单个 Agent 对话
 

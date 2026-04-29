@@ -1098,7 +1098,7 @@ wheels = [
 ]
 
 [[package]]
-name = "langvideo-agents"
+name = "long-river-agent"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

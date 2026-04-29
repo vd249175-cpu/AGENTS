@@ -379,7 +379,7 @@ class AgentRecord:
         self.updated_at = _now()
 
 
-app = FastAPI(title="LANGVIDEO MainServer", version="1.0.0")
+app = FastAPI(title="Long River Agent MainServer", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

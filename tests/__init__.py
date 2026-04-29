@@ -1,2 +1,1 @@
-"""Tests for the LANGVIDEO skeleton."""
-
+"""Tests for the Long River Agent skeleton."""

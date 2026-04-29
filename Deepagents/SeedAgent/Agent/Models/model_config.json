@@ -1,0 +1,16 @@
+{
+  "chat_model": {
+    "model": "gpt-5.4-nano",
+    "provider": "openai",
+    "base_url": "https://aiyjg.lol/v1",
+    "api_key": "sk-91epmrpO9HiULrSyNULQG9em2iiP8cLp0vrRvIBqbF9kxtet",
+    "temperature": 0.0
+  },
+  "embedding_model": {
+    "model": "text-embedding-3-small",
+    "provider": "openai",
+    "base_url": "https://aiyjg.lol/v1",
+    "api_key": "sk-91epmrpO9HiULrSyNULQG9em2iiP8cLp0vrRvIBqbF9kxtet",
+    "dimensions": 1536
+  }
+}

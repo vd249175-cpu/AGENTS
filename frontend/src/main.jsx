@@ -1337,7 +1337,7 @@ function App() {
       <aside className="sidebar">
         <header className="brand">
           <div>
-            <h1>LANGVIDEO</h1>
+            <h1>Long River Agent</h1>
             <p>Agent Console</p>
           </div>
           <span className={online ? "status online" : "status offline"}>

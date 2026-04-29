@@ -1,5 +1,5 @@
 [project]
-name = "langvideo-agents"
+name = "long-river-agent"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
@@ -13,4 +13,3 @@ dependencies = [
     "llama-index-core>=0.14.21",
     "langgraph-checkpoint-sqlite>=3.0.3",
 ]
-
