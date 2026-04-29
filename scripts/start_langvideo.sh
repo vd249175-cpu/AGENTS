@@ -11,6 +11,7 @@ LOG_DIR="${LANGVIDEO_LOG_DIR:-${ROOT}/tests/logs/dev-start}"
 START_AGENTS="${LANGVIDEO_START_AGENTS:-1}"
 OPEN_BROWSER="${LANGVIDEO_OPEN_BROWSER:-1}"
 AGENTS="${LANGVIDEO_AGENTS:-KnowledgeSeedAgent SeedAgent}"
+KILL_OLD="${LANGVIDEO_KILL_OLD:-1}"
 STARTED_AGENTS_FILE="${LOG_DIR}/started_agents.txt"
 
 MAIN_PID=""
@@ -57,6 +58,163 @@ wait_for_url() {
   return 1
 }
 
+agent_list_args() {
+  # shellcheck disable=SC2086
+  printf "%s\n" ${AGENTS}
+}
+
+registered_agent_ports() {
+  if ! is_http_ok "${MAIN_URL}/healthz"; then
+    return
+  fi
+  "${PYTHON_CMD[@]}" - "${MAIN_URL}" <<'PY' 2>/dev/null || true
+import json
+import sys
+import urllib.parse
+import urllib.request
+
+main_url = sys.argv[1].rstrip("/")
+try:
+    with urllib.request.urlopen(f"{main_url}/admin/monitor", timeout=2) as response:
+        data = json.loads(response.read().decode("utf-8") or "{}")
+except Exception:
+    raise SystemExit(0)
+
+ports = set()
+for agent in data.get("agents", []):
+    metadata = agent.get("metadata") or {}
+    port = metadata.get("service_port")
+    if port:
+        ports.add(str(port))
+        continue
+    service_url = metadata.get("service_url") or ""
+    parsed = urllib.parse.urlparse(service_url)
+    if parsed.port:
+        ports.add(str(parsed.port))
+
+for port in sorted(ports, key=int):
+    print(port)
+PY
+}
+
+stop_registered_agents() {
+  if [ "${START_AGENTS}" != "1" ] || ! is_http_ok "${MAIN_URL}/healthz"; then
+    return
+  fi
+  "${PYTHON_CMD[@]}" - "${MAIN_URL}" ${AGENTS} <<'PY' || true
+import json
+import sys
+import urllib.request
+
+main_url = sys.argv[1].rstrip("/")
+configured = set(sys.argv[2:])
+names = set(configured)
+try:
+    with urllib.request.urlopen(f"{main_url}/admin/monitor", timeout=2) as response:
+        data = json.loads(response.read().decode("utf-8") or "{}")
+    names.update(agent.get("agent_name") for agent in data.get("agents", []) if agent.get("agent_name"))
+except Exception:
+    pass
+
+for agent_name in sorted(names):
+    request = urllib.request.Request(
+        f"{main_url}/admin/agents/{agent_name}/service/stop",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3):
+            pass
+        print(f"agent: {agent_name} old service stop requested")
+    except Exception as exc:
+        print(f"agent: {agent_name} old service stop skipped: {type(exc).__name__}: {exc}")
+PY
+}
+
+kill_pids() {
+  local label="$1"
+  shift
+  local pids=("$@")
+  if [ "${#pids[@]}" -eq 0 ]; then
+    return
+  fi
+  echo "${label}: stopping pids ${pids[*]}"
+  kill "${pids[@]}" >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do
+    local alive=()
+    for pid in "${pids[@]}"; do
+      if kill -0 "${pid}" >/dev/null 2>&1; then
+        alive+=("${pid}")
+      fi
+    done
+    if [ "${#alive[@]}" -eq 0 ]; then
+      return
+    fi
+    sleep 0.15
+  done
+  kill -9 "${pids[@]}" >/dev/null 2>&1 || true
+}
+
+kill_listening_port() {
+  local port="$1"
+  local label="$2"
+  if ! command -v lsof >/dev/null 2>&1; then
+    echo "${label}: lsof not found, cannot kill listeners on port ${port}"
+    return
+  fi
+  local pids
+  pids="$(lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null | sort -u || true)"
+  if [ -z "${pids}" ]; then
+    return
+  fi
+  # shellcheck disable=SC2206
+  local pid_array=(${pids})
+  kill_pids "${label}:${port}" "${pid_array[@]}"
+}
+
+kill_agent_processes_by_name() {
+  if ! command -v pgrep >/dev/null 2>&1; then
+    return
+  fi
+  local agent_name
+  while IFS= read -r agent_name; do
+    [ -n "${agent_name}" ] || continue
+    local pids
+    pids="$(pgrep -f "Deepagents\\.${agent_name}\\.AgentServer" 2>/dev/null || true)"
+    if [ -z "${pids}" ]; then
+      continue
+    fi
+    # shellcheck disable=SC2206
+    local pid_array=(${pids})
+    kill_pids "agent:${agent_name}" "${pid_array[@]}"
+  done < <(agent_list_args)
+}
+
+stop_old_stack() {
+  if [ "${KILL_OLD}" != "1" ]; then
+    echo "restart: preserving old processes because LANGVIDEO_KILL_OLD=${KILL_OLD}"
+    return
+  fi
+
+  echo "restart: stopping old Long River Agent processes"
+  local ports=()
+  while IFS= read -r port; do
+    [ -n "${port}" ] && ports+=("${port}")
+  done < <(registered_agent_ports)
+
+  stop_registered_agents
+  kill_agent_processes_by_name
+  kill_listening_port "${MAIN_PORT}" "mainserver"
+  kill_listening_port "${FRONTEND_PORT}" "frontend"
+  if [ "${#ports[@]}" -gt 0 ]; then
+    local port
+    for port in "${ports[@]}"; do
+      kill_listening_port "${port}" "agent"
+    done
+  fi
+}
+
 start_mainserver() {
   if is_http_ok "${MAIN_URL}/healthz"; then
     echo "mainserver: already running ${MAIN_URL}"
@@ -92,20 +250,47 @@ start_agents() {
     echo "agents: skipped by LANGVIDEO_START_AGENTS=${START_AGENTS}"
     return
   fi
-  "${PYTHON_CMD[@]}" - "${MAIN_URL}" "${STARTED_AGENTS_FILE}" ${AGENTS} <<'PY'
+  "${PYTHON_CMD[@]}" - "${MAIN_URL}" "${STARTED_AGENTS_FILE}" "${HOST}" ${AGENTS} <<'PY'
 import json
 import sys
+import time
+import urllib.error
 import urllib.request
 
 main_url = sys.argv[1].rstrip("/")
 started_file = sys.argv[2]
-agents = sys.argv[3:]
+host = sys.argv[3]
+agents = sys.argv[4:]
+
+
+def wait_for_agent(url: str | None, timeout: float = 30.0) -> bool:
+    if not url:
+        return False
+    deadline = time.time() + timeout
+    health_url = url.rstrip("/") + "/healthz"
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(health_url, timeout=1) as response:
+                if response.status < 500:
+                    return True
+        except (OSError, urllib.error.URLError):
+            pass
+        time.sleep(0.25)
+    return False
+
+
+def service_url_from(data: dict) -> str | None:
+    if data.get("service_url"):
+        return data["service_url"]
+    agent = data.get("agent") or {}
+    metadata = agent.get("metadata") or {}
+    return metadata.get("service_url")
 
 started = []
 for agent_name in agents:
     payload = json.dumps(
         {
-            "host": "127.0.0.1",
+            "host": host,
             "port": None,
             "main_server_url": main_url,
         }
@@ -123,7 +308,10 @@ for agent_name in agents:
         print(f"agent: {agent_name} start failed: {type(exc).__name__}: {exc}")
         continue
     status = "already running" if data.get("already_running") else "started"
-    print(f"agent: {agent_name} {status} {data.get('service_url') or ''}")
+    service_url = service_url_from(data)
+    ready = wait_for_agent(service_url)
+    ready_text = "ready" if ready else "not-ready"
+    print(f"agent: {agent_name} {status} {ready_text} {service_url or ''}")
     if data.get("ok") and not data.get("already_running"):
         started.append(agent_name)
 
@@ -183,6 +371,7 @@ handle_signal() {
 trap cleanup EXIT
 trap handle_signal INT TERM
 
+stop_old_stack
 start_mainserver
 start_frontend
 start_agents

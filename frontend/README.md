@@ -22,6 +22,12 @@
 ./scripts/start_langvideo.sh
 ```
 
+一键启动脚本默认会先停止旧的 MainServer、前端和基础 Agent 服务，再启动当前代码库里的新服务。需要保留已有进程时可以使用：
+
+```bash
+LANGVIDEO_KILL_OLD=0 ./scripts/start_langvideo.sh
+```
+
 如果只想单独启动前端：
 
 ```bash
