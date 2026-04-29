@@ -196,6 +196,13 @@ CollaborationState       # {"agentcard", "agent_messages"}
 - 对话入口的 `run_id` 只用于本次 agent invocation / stream 追踪；不要用它自动覆盖
   Agent runtime config 中的 `knowledgeRunId`。知识图身份由 `knowledgeRunId` 管理，
   新开 `thread_id` 应清空对话 checkpoint 上下文，但仍可访问同一 agent 的知识库。
+- 邮件唤醒必须使用接收方 `/user/chat/config/{agent_name}` 的主 `thread_id/run_id`；
+  邮件 metadata 中的 `thread_id/run_id` 只作为审计和 UI 展示信息，不允许覆盖接收方
+  checkpoint 指向。不要把邮件处理写入 `mail-*` 临时线程，否则用户回到原对话线程时
+  会丢失“收到并处理邮件”的 state。
+- `receive_messages` 中间件读取 inbox 后，必须在 `before_model` 中把 `<Inbox>` 作为
+  `HumanMessage(name="agent_inbox")` 返回到 state update，让 LangGraph sqlite
+  checkpoint 持久化邮件内容；不要只在 `wrap_model_call` 临时追加给模型看。
 - 主 agent 的会话记忆由 LangGraph sqlite checkpointer 保存，默认路径是
   `Agent/store/checkpoints/langgraph.sqlite3`，可通过 runtime config 的
   `checkpointPath` 覆盖。清理 checkpoint 后必须重载运行中的 AgentServer，

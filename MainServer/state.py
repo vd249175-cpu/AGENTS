@@ -42,6 +42,7 @@ AgentMail = TypedDict(
         "type": MessageType,
         "content": str | TaskInfo,
         "attachments": list[Link],
+        "metadata": NotRequired[dict],
     },
 )
 

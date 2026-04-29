@@ -21,8 +21,9 @@ def make_message(
     content: str | TaskInfo,
     msg_type: MessageType = "message",
     attachments: list[Link] | None = None,
+    metadata: dict | None = None,
 ) -> AgentMail:
-    return {
+    message: AgentMail = {
         "message_id": short_id(),
         "from": src,
         "to": dst,
@@ -30,3 +31,6 @@ def make_message(
         "content": content,
         "attachments": attachments or [],
     }
+    if metadata:
+        message["metadata"] = metadata
+    return message

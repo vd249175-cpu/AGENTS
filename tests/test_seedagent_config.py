@@ -2,6 +2,8 @@ import unittest
 
 from Deepagents.SeedAgent.Agent.MainAgent import Config, EXAMPLE_CONFIG_PATH, build_middlewares, render_system_prompt
 from Deepagents.SeedAgent.Agent.middlewares.knowledge_ingest import KnowledgeIngestMiddleware
+from Deepagents.SeedAgent.Agent.middlewares.receive_messages import Config as ReceiveMessagesConfig
+from Deepagents.SeedAgent.Agent.middlewares.receive_messages import Middleware as ReceiveMessagesMiddlewareImpl
 from Deepagents.SeedAgent.Agent.server.memory_bridge import build_chunk_apply_config
 from Deepagents.SeedAgent.Agent.server.memory_bridge import build_knowledge_manager_config_payload
 from Deepagents.SeedAgent.AgentServer.service import load_service_config
@@ -9,6 +11,7 @@ from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import Config as KnowledgeSee
 from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import EXAMPLE_CONFIG_PATH as KNOWLEDGE_EXAMPLE_CONFIG_PATH
 from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import build_middlewares as build_knowledge_middlewares
 from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import render_system_prompt as render_knowledge_system_prompt
+from types import SimpleNamespace
 
 
 class SeedAgentConfigTests(unittest.TestCase):
@@ -59,6 +62,38 @@ class SeedAgentConfigTests(unittest.TestCase):
 
         self.assertEqual(middleware.middleware.name, "knowledge_ingest")
         self.assertEqual([tool.name for tool in middleware.middleware.tools], ["ingest_knowledge_document"])
+
+    def test_receive_messages_persists_inbox_as_state_message(self) -> None:
+        class FakeComm:
+            def recv(self):
+                return [
+                    {
+                        "message_id": "mail-1",
+                        "from": "KnowledgeSeedAgent",
+                        "to": "SeedAgent",
+                        "type": "message",
+                        "content": "reply token beta-42",
+                        "attachments": [],
+                    }
+                ]
+
+            def peers(self):
+                return ["KnowledgeSeedAgent"]
+
+        events = []
+        middleware = ReceiveMessagesMiddlewareImpl(
+            comm=FakeComm(),
+            runingConfig=ReceiveMessagesConfig(enabled=True, maxInboxItems=5),
+        )
+
+        update = middleware.before_model({"messages": []}, SimpleNamespace(stream_writer=events.append))
+
+        self.assertIsNotNone(update)
+        self.assertEqual(update["receiveMessagesLastCount"], 1)
+        self.assertIn("reply token beta-42", update["receiveMessagesLastInbox"])
+        self.assertEqual(update["messages"][0].name, "agent_inbox")
+        self.assertIn("reply token beta-42", update["messages"][0].content)
+        self.assertEqual(events[0]["event"], "inbox_persisted")
 
     def test_top_level_build_adds_no_free_tools_for_ingest_only(self) -> None:
         config = Config.load_config_seed_agent(EXAMPLE_CONFIG_PATH).model_copy(

@@ -11,7 +11,14 @@ from pydantic import BaseModel, Field
 
 from MainServer.comm import AgentComm
 from MainServer.state import MessageType
-from ..server.demo_server import StrictConfig, config_from_external, emit, get_nested_count, update_nested_count
+from ..server.demo_server import (
+    StrictConfig,
+    config_from_external,
+    current_runtime_identity,
+    emit,
+    get_nested_count,
+    update_nested_count,
+)
 from ..server.path_resolver import WORKSPACE_ROOT, is_network_link, workspace_visible_path
 
 
@@ -21,6 +28,8 @@ class Config(StrictConfig):
     hideToolMessageContent: bool = Field(default=False, description="Whether to hide ToolMessage content.")
     currentAgentName: str | None = Field(default=None, description="Current agent name for self-send checks.")
     blockSelfTarget: bool = Field(default=True, description="Block messages sent to the current agent.")
+    defaultRunId: str = Field(default="knowledgeseedagent-run", description="Fallback LangVideo run id.")
+    defaultThreadId: str = Field(default="default", description="Fallback LangVideo thread id.")
 
     @classmethod
     def load_config_send_message_tool(cls, source=None):
@@ -261,11 +270,21 @@ class SendMessageTool:
                         raise ValueError("content must not be empty for message messages.")
                     message_content = message_text
 
+                identity = current_runtime_identity(
+                    defaultRunId=context.defaultRunId,
+                    defaultThreadId=context.defaultThreadId,
+                )
                 result = self.comm.send(
                     dst=target,
                     content=message_content,
                     msg_type=message_type,
                     attachments=normalized_attachments,
+                    metadata={
+                        "thread_id": identity.threadId,
+                        "run_id": identity.runId,
+                        "conversation_thread_id": identity.threadId,
+                        "conversation_run_id": identity.runId,
+                    },
                 )
                 result_text = (
                     f"{returns.successText}\n"

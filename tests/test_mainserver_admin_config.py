@@ -106,6 +106,15 @@ class MainServerAdminConfigTests(unittest.TestCase):
             "/agents/AgentB/status",
             json={"status": "running", "phase": "ready", "step": "waiting"},
         )
+        self.client.put(
+            "/user/chat/config/AgentB",
+            json={
+                "thread_id": "receiver-thread",
+                "run_id": "receiver-run",
+                "stream_mode": ["messages", "updates", "custom"],
+                "version": "v2",
+            },
+        )
 
         response = self.client.post(
             "/send",
@@ -116,13 +125,16 @@ class MainServerAdminConfigTests(unittest.TestCase):
                 "type": "message",
                 "content": "please handle this",
                 "attachments": [],
+                "metadata": {"thread_id": "sender-thread", "run_id": "sender-run"},
             },
         )
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["wake_scheduled"])
         self.assertEqual(calls[0]["url"], "http://127.0.0.1:8011/invoke")
-        self.assertEqual(calls[0]["payload"]["run_id"], "mail-wake-1")
+        self.assertEqual(calls[0]["payload"]["session_id"], "receiver-thread")
+        self.assertEqual(calls[0]["payload"]["run_id"], "receiver-run")
+        self.assertIn("mail_metadata_thread_id=sender-thread", calls[0]["payload"]["messages"][0]["content"])
         self.assertEqual(calls[0]["payload"]["stream_mode"], ["updates", "custom", "messages"])
 
     def test_empty_communication_spaces_default_to_all_registered_peers(self) -> None:
@@ -138,6 +150,15 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.assertEqual(response.json()["peers"], ["AgentB", "AgentC"])
 
     def test_user_chat_mail_builds_agent_mail(self) -> None:
+        self.client.put(
+            "/user/chat/config/SeedAgent",
+            json={
+                "thread_id": "mail-thread",
+                "run_id": "mail-run",
+                "stream_mode": ["updates", "custom"],
+                "version": "v2",
+            },
+        )
         response = self.client.post(
             "/user/chat",
             json={
@@ -161,6 +182,8 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.assertEqual(messages[0]["to"], "SeedAgent")
         self.assertEqual(messages[0]["content"], "hello from user")
         self.assertEqual(messages[0]["attachments"], [])
+        self.assertEqual(messages[0]["metadata"]["thread_id"], "mail-thread")
+        self.assertEqual(messages[0]["metadata"]["run_id"], "mail-run")
 
     def test_user_chat_direct_proxies_invoke_payload_with_multimodal_user_message(self) -> None:
         calls = []

@@ -42,6 +42,7 @@ class AgentComm:
         content: str | TaskInfo,
         msg_type: MessageType = "message",
         attachments: list[Link] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not dst:
             raise ValueError("dst must be a non-empty agent name.")
@@ -51,6 +52,7 @@ class AgentComm:
             msg_type=msg_type,
             content=content,
             attachments=attachments,
+            metadata=metadata,
         )
         return _post(f"{self.base_url}/send", message, timeout=self.timeout)
 

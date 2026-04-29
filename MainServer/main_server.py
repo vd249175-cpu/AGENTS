@@ -459,6 +459,18 @@ def _agent_is_busy(record: AgentRecord) -> bool:
 def _mail_wake_payload(agent_name: str, message: AgentMail) -> dict[str, Any]:
     message_id = str(message.get("message_id") or "mail")
     source = str(message.get("from") or "unknown")
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    chat_config = _agent_chat_config(agent_name)
+    thread_id = str(chat_config.thread_id or "default").strip() or "default"
+    run_id = str(chat_config.run_id or f"{thread_id}-run").strip() or f"{thread_id}-run"
+    mail_thread_id = str(metadata.get("thread_id") or metadata.get("conversation_thread_id") or "").strip()
+    mail_run_id = str(metadata.get("run_id") or metadata.get("conversation_run_id") or "").strip()
+    metadata_note = ""
+    if mail_thread_id or mail_run_id:
+        metadata_note = (
+            f" mail_metadata_thread_id={mail_thread_id or 'none'}; "
+            f"mail_metadata_run_id={mail_run_id or 'none'}."
+        )
     return {
         "messages": [
             {
@@ -466,12 +478,14 @@ def _mail_wake_payload(agent_name: str, message: AgentMail) -> dict[str, Any]:
                 "content": (
                     "You have new mail in your MainServer inbox. "
                     "Run your receive_messages middleware, read the inbox, and handle the mail. "
-                    f"message_id={message_id}; from={source}."
+                    "Use this agent's current main checkpoint thread; do not create or switch to a mail thread. "
+                    f"message_id={message_id}; from={source}; receiver_thread_id={thread_id}; receiver_run_id={run_id}."
+                    f"{metadata_note}"
                 ),
             }
         ],
-        "session_id": f"mail-{agent_name}",
-        "run_id": f"mail-{message_id}",
+        "session_id": thread_id,
+        "run_id": run_id,
         "stream_mode": ["updates", "custom", "messages"],
         "version": "v2",
     }
@@ -518,6 +532,7 @@ async def _wake_agent_for_mail(agent_name: str, service_url: str, message: Agent
             "event": "mail_wake_start",
             "message_id": message.get("message_id"),
             "mode": mode,
+            "thread_id": payload["session_id"],
             "run_id": payload["run_id"],
             "at": _iso(),
         },
@@ -816,6 +831,7 @@ class SendRequest(BaseModel):
     type: MessageType
     content: str | dict[str, Any]
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"populate_by_name": True}
 
@@ -829,6 +845,7 @@ async def send_message(payload: SendRequest, background_tasks: BackgroundTasks) 
         "type": payload.type,
         "content": payload.content,
         "attachments": payload.attachments,
+        "metadata": payload.metadata,
     }
 
     if payload.from_ != "user" and not communication_allows(payload.from_, payload.to):
@@ -887,6 +904,10 @@ async def user_chat(payload: UserChatRequest, background_tasks: BackgroundTasks)
             msg_type=payload.type,
             content=mail_content,
             attachments=payload.attachments,
+            metadata={
+                "thread_id": payload.thread_id or payload.session_id or _agent_chat_config(payload.agent_name).thread_id,
+                "run_id": payload.run_id or _agent_chat_config(payload.agent_name).run_id,
+            },
         )
         routed = route_message_assets(message, str(agent_workspace(payload.agent_name)))
         _mailboxes.setdefault(payload.agent_name, []).append(routed)

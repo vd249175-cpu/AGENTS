@@ -89,6 +89,8 @@ class Middleware(BaseAgentMiddleware):
             defaultMessageType=runingConfig.defaultMessageType,
             currentAgentName=comm.agent_name if comm is not None else None,
             blockSelfTarget=runingConfig.blockSelfTarget,
+            defaultRunId=runingConfig.defaultRunId,
+            defaultThreadId=runingConfig.defaultThreadId,
         )
         send_tool = SendMessageTool(comm=comm, runingConfig=tool_config)
         self.toolConfig = {

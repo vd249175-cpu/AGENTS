@@ -88,6 +88,10 @@ LANGVIDEO/
     AgentServer 注册时应把 `service_url` 写入 metadata，便于 MainServer 代理。
   - 前端可通过 `GET/PUT /user/chat/config/{agent_name}` 独立管理默认
     `thread_id`、`run_id`、`stream_mode` 和 `version`；请求级参数会覆盖默认配置。
+  - 邮件唤醒使用接收方用户聊天配置中的主 `thread_id/run_id`；邮件 metadata 中的
+    `thread_id/run_id` 只用于审计和 UI 展示，不覆盖接收方 checkpoint。
+    `receive_messages` 会把 `<Inbox>` 写入 state messages，使邮件内容进入 sqlite
+    checkpoint，而不是只在当轮模型调用里临时可见。
   - 前端或管理接口写入 Agent runtime config 后，MainServer 会在 AgentServer 在线时
     调用 `/reload-config`，让内存中的主 agent 重新读取配置。
   - 主 agent 对话 checkpoint 默认落在
