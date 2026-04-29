@@ -78,6 +78,13 @@ def _trim_events(events: list[dict[str, Any]], limit: int = 200) -> list[dict[st
     return events[-limit:]
 
 
+def _event_text(value: Any, *, limit: int = 4000) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n...[truncated]"
+
+
 class AgentRegistration(BaseModel):
     agent_name: str
     host: str | None = None
@@ -626,7 +633,7 @@ async def _wake_agent_for_mail(agent_name: str, service_url: str, message: Agent
             },
         )
         return
-    surface_reply = str(message.get("type") or "") != "message" or bool(message.get("attachments") or [])
+    reply = _event_text(response.get("reply"), limit=4000)
     _append_event(
         record,
         {
@@ -636,8 +643,8 @@ async def _wake_agent_for_mail(agent_name: str, service_url: str, message: Agent
             "from": message.get("from"),
             "message_type": message.get("type"),
             "attachment_count": len(message.get("attachments") or []),
-            "reply": str(response.get("reply") or "")[:500] if surface_reply else "",
-            "reply_suppressed": not surface_reply,
+            "reply": reply,
+            "has_reply": bool(reply.strip()),
             "at": _iso(),
         },
     )

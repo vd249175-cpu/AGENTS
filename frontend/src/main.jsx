@@ -371,14 +371,33 @@ function summarizeAgentEvent(eventItem, agentName, index) {
   }
 
   if (eventName === "mail_wake_success") {
-    if (!String(eventItem.reply || "").trim()) return null;
+    const reply = String(eventItem.reply || "").trim();
+    if (!reply) {
+      const sender = eventItem.from ? `from ${eventItem.from}` : "";
+      return {
+        id: `event-${agentName}-${at || stableHash(`${sender}-${eventItem.message_id || ""}`)}-wake-success`,
+        kind: "tool",
+        role: "behavior",
+        at,
+        time: eventTime(eventItem),
+        content: `${agentName} 处理了邮件`,
+        events: [
+          {
+            id: `mail-wake-${index}`,
+            type: "mail",
+            title: "邮件已唤醒",
+            detail: [sender, eventItem.message_id ? `message_id=${eventItem.message_id}` : ""].filter(Boolean).join(" "),
+          },
+        ],
+      };
+    }
     return {
       id: `event-${agentName}-${at || stableHash(eventItem.reply)}-wake-message`,
       kind: "message",
       role: "agent",
       at,
       time: eventTime(eventItem),
-      content: eventItem.reply || "",
+      content: reply,
       events: [],
     };
   }

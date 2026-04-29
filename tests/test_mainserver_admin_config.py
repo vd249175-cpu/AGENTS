@@ -136,6 +136,10 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.assertEqual(calls[0]["payload"]["run_id"], "receiver-run")
         self.assertIn("mail_metadata_thread_id=sender-thread", calls[0]["payload"]["messages"][0]["content"])
         self.assertEqual(calls[0]["payload"]["stream_mode"], ["updates", "custom", "messages"])
+        events = self.client.get("/agents/AgentB").json()["events"]
+        wake_success = [event for event in events if event.get("event") == "mail_wake_success"][-1]
+        self.assertEqual(wake_success["reply"], "handled inbox")
+        self.assertTrue(wake_success["has_reply"])
 
     def test_empty_communication_spaces_default_to_all_registered_peers(self) -> None:
         self.client.post(
