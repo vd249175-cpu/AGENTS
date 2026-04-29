@@ -1,7 +1,7 @@
 """Single-file communication tool following the demo wrapper pattern."""
 
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Annotated, Any
 
 from langchain.agents.middleware import AgentState
 from langchain.tools import ToolRuntime, tool
@@ -39,11 +39,19 @@ class Config(StrictConfig):
 ToolRuningConfigSc = Config
 
 
+def _sum_runs(left: int | None, right: int | None) -> int:
+    return int(left or 0) + int(right or 0)
+
+
+def _last_value(left: Any, right: Any) -> Any:
+    return right if right is not None else left
+
+
 class SubState(AgentState, total=False):
-    sendMessageTotalRuns: int
-    sendMessageLastTarget: str | None
-    sendMessageLastResult: str | None
-    sendMessageLastError: str | None
+    sendMessageTotalRuns: Annotated[int, _sum_runs]
+    sendMessageLastTarget: Annotated[str | None, _last_value]
+    sendMessageLastResult: Annotated[str | None, _last_value]
+    sendMessageLastError: Annotated[str | None, _last_value]
 
 
 ToolStateTydict = SubState
@@ -231,7 +239,6 @@ class SendMessageTool:
             taskInfo: dict[str, Any] | None = None,
             attachments: list[dict[str, str]] | None = None,
         ) -> Command:
-            current_state = runtime.state
             writer = runtime.stream_writer
             context = runtime.context or self.runingConfig
             target = (dst or context.defaultDestination or "").strip() or None
@@ -311,7 +318,7 @@ class SendMessageTool:
                                 tool_call_id=runtime.tool_call_id,
                             )
                         ],
-                        "sendMessageTotalRuns": int(current_state.get("sendMessageTotalRuns", 0) or 0) + 1,
+                        "sendMessageTotalRuns": 1,
                         "sendMessageLastTarget": target,
                         "sendMessageLastResult": result_text,
                         "sendMessageLastError": None,
@@ -342,6 +349,7 @@ class SendMessageTool:
                                 tool_call_id=runtime.tool_call_id,
                             )
                         ],
+                        "sendMessageTotalRuns": 1,
                         "sendMessageLastTarget": target,
                         "sendMessageLastResult": None,
                         "sendMessageLastError": error_text,

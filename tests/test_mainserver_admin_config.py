@@ -185,6 +185,70 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.assertEqual(messages[0]["metadata"]["thread_id"], "mail-thread")
         self.assertEqual(messages[0]["metadata"]["run_id"], "mail-run")
 
+    def test_user_chat_mail_uses_effective_default_run_id(self) -> None:
+        self.client.put(
+            "/user/chat/config/SeedAgent",
+            json={
+                "thread_id": "mail-thread",
+                "run_id": None,
+                "stream_mode": ["updates", "custom"],
+                "version": "v2",
+            },
+        )
+        response = self.client.post(
+            "/user/chat",
+            json={
+                "agent_name": "SeedAgent",
+                "mode": "mail",
+                "from": "user",
+                "text": "hello from user",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        response = self.client.get("/recv/SeedAgent")
+        messages = response.json()["messages"]
+        self.assertEqual(messages[0]["metadata"]["thread_id"], "mail-thread")
+        self.assertEqual(messages[0]["metadata"]["run_id"], "mail-thread-run")
+        self.assertEqual(messages[0]["metadata"]["conversation_thread_id"], "mail-thread")
+        self.assertEqual(messages[0]["metadata"]["conversation_run_id"], "mail-thread-run")
+
+    def test_user_chat_mail_decodes_browser_data_url_attachments(self) -> None:
+        agent_name = "MailUploadAgent"
+        agent_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / agent_name
+        shutil.rmtree(agent_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, agent_root, True)
+
+        response = self.client.post(
+            "/user/chat",
+            json={
+                "agent_name": agent_name,
+                "mode": "mail",
+                "from": "user",
+                "text": "see attached note",
+                "attachments": [
+                    {
+                        "link": "data:text/plain;charset=utf-8,hello%20mail",
+                        "name": "note.txt",
+                        "summary": "note.txt",
+                        "mime_type": "text/plain",
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        response = self.client.get(f"/recv/{agent_name}")
+        self.assertEqual(response.status_code, 200)
+        attachment = response.json()["messages"][0]["attachments"][0]
+        self.assertEqual(attachment["_routed"], "decoded")
+        self.assertEqual(attachment["visible_link"], "/workspace/mail/user__" + response.json()["messages"][0]["message_id"] + "/note.txt")
+        decoded_file = Path(attachment["link"])
+        self.assertTrue(decoded_file.exists())
+        self.assertEqual(decoded_file.read_text(encoding="utf-8"), "hello mail")
+        message_md = decoded_file.parent / "message.md"
+        self.assertIn("`/workspace/mail/", message_md.read_text(encoding="utf-8"))
+
     def test_user_chat_direct_proxies_invoke_payload_with_multimodal_user_message(self) -> None:
         calls = []
 

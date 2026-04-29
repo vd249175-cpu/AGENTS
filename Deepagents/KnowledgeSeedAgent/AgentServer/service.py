@@ -515,6 +515,7 @@ def create_app(scope: Any = None) -> FastAPI:
         await observer.set_status("running", phase="reload_config", step="start")
         try:
             main_agent = await app.state.runtime.reload_config(comm=app.state.comm, agent_name=observer.agent_name)
+            await observer.register()
             await observer.set_status(
                 "running",
                 phase="ready",

@@ -6,6 +6,9 @@ import {
   CheckCircle2,
   Copy,
   Database,
+  FileText,
+  Image,
+  Mail,
   MessageSquare,
   Network,
   Plus,
@@ -22,6 +25,8 @@ import "./styles.css";
 
 const DEFAULT_STREAM_MODE = ["messages", "updates", "custom"];
 const DEFAULT_SPACE_COLOR = "#2563eb";
+const TEXT_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx", ".css", ".html"]);
+const TEXT_MIME_TYPES = new Set(["text/plain", "text/markdown", "application/json", "text/csv", "text/tab-separated-values"]);
 
 function pretty(value) {
   return JSON.stringify(value ?? null, null, 2);
@@ -39,6 +44,15 @@ function shortId(prefix = "") {
   return `${prefix}${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function stableHash(value) {
+  const text = String(value || "");
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
 function makeChatMessage(role, content, extra = {}) {
   return {
     id: shortId("msg-"),
@@ -54,6 +68,7 @@ function normalizeChatMessages(messages) {
   return messages.map((message, index) => ({
     id: message.id || `legacy-${index}-${String(message.role || "message").replace(/\s+/g, "-")}`,
     created_at: message.created_at || message.createdAt || null,
+    attachments: Array.isArray(message.attachments) ? message.attachments : [],
     ...message,
   }));
 }
@@ -87,6 +102,97 @@ function contentPreview(value, limit = 260) {
     return pretty(value).slice(0, limit);
   }
   return String(value).slice(0, limit);
+}
+
+function formatBytes(size) {
+  if (!Number.isFinite(size) || size <= 0) return "";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function fileExtension(name) {
+  const match = String(name || "").toLowerCase().match(/\.[^.]+$/);
+  return match ? match[0] : "";
+}
+
+function isTextFile(file) {
+  return TEXT_MIME_TYPES.has(file.type) || TEXT_EXTENSIONS.has(fileExtension(file.name));
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error(`读取 ${file.name} 失败`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error(`读取 ${file.name} 失败`));
+    reader.readAsText(file);
+  });
+}
+
+function dataUrlBase64(dataUrl) {
+  return String(dataUrl || "").split(",", 2)[1] || "";
+}
+
+async function fileToComposerAttachment(file) {
+  const mimeType = file.type || "application/octet-stream";
+  if (mimeType.startsWith("image/")) {
+    const dataUrl = await readFileAsDataUrl(file);
+    return {
+      id: shortId("file-"),
+      name: file.name,
+      size: file.size,
+      mime_type: mimeType,
+      kind: "image",
+      link: dataUrl,
+      summary: file.name,
+      parts: [],
+    };
+  }
+  if (isTextFile(file)) {
+    const text = await readFileAsText(file);
+    return {
+      id: shortId("file-"),
+      name: file.name,
+      size: file.size,
+      mime_type: mimeType,
+      kind: "text",
+      link: `data:${mimeType};charset=utf-8,${encodeURIComponent(text)}`,
+      summary: file.name,
+      parts: [
+        {
+          type: "text",
+          text: `Attached document: ${file.name}\n\n${text}`,
+        },
+      ],
+    };
+  }
+  const dataUrl = await readFileAsDataUrl(file);
+  return {
+    id: shortId("file-"),
+    name: file.name,
+    size: file.size,
+    mime_type: mimeType,
+    kind: "file",
+    link: dataUrl,
+    summary: file.name,
+    parts: [
+      {
+        type: "file",
+        base64: dataUrlBase64(dataUrl),
+        mime_type: mimeType,
+        filename: file.name,
+      },
+    ],
+  };
 }
 
 function normalizeStreamChunk(chunk) {
@@ -226,7 +332,7 @@ function summarizeAgentEvent(eventItem, agentName, index) {
   if (toolCalls.length) {
     const names = [...new Set(toolCalls.map((call) => call.name))].join(", ");
     return {
-      id: `event-${agentName}-${at || index}-tool-call-${names}`,
+      id: `event-${agentName}-${at || stableHash(names)}-tool-call-${names}`,
       kind: "tool",
       role: "behavior",
       at,
@@ -239,7 +345,7 @@ function summarizeAgentEvent(eventItem, agentName, index) {
   if (toolMessages.length) {
     const detail = toolMessages.map((message) => contentPreview(message.content)).filter(Boolean).join("\n\n");
     return {
-      id: `event-${agentName}-${at || index}-tool-result`,
+      id: `event-${agentName}-${at || stableHash(detail)}-tool-result`,
       kind: "tool",
       role: "behavior",
       at,
@@ -250,8 +356,9 @@ function summarizeAgentEvent(eventItem, agentName, index) {
   }
 
   if (eventName === "mail_wake_success") {
+    if (!String(eventItem.reply || "").trim()) return null;
     return {
-      id: `event-${agentName}-${at || index}-wake-message`,
+      id: `event-${agentName}-${at || stableHash(eventItem.reply)}-wake-message`,
       kind: "message",
       role: "agent",
       at,
@@ -264,7 +371,7 @@ function summarizeAgentEvent(eventItem, agentName, index) {
   if (assistantMessages.length && eventName === "end" && eventItem.phase === "after_agent") {
     const detail = contentPreview(assistantMessages[assistantMessages.length - 1].content, 600);
     return {
-      id: `event-${agentName}-${at || index}-assistant-message`,
+      id: `event-${agentName}-${at || stableHash(detail)}-assistant-message`,
       kind: "message",
       role: "agent",
       at,
@@ -282,24 +389,28 @@ function summarizeMailEvent(item, selectedAgent, index) {
   const isReceived = message.to === selectedAgent;
   const direction = isReceived ? "收到邮件" : "发送邮件";
   const peer = message.to === selectedAgent ? message.from : message.to;
+  const detail =
+    typeof message.content === "string"
+      ? message.content
+      : contentPreview(message.content || message);
+  const isPlainReceivedMessage = isReceived && message.type === "message";
   return {
     id: `mail-${item?.at || index}-${message.message_id || index}`,
-    kind: "tool",
-    role: "behavior",
+    kind: isPlainReceivedMessage ? "message" : "tool",
+    role: isPlainReceivedMessage ? "agent" : "behavior",
     at: item?.at || "",
     time: eventTime(item),
-    content: `${selectedAgent} ${direction}`,
-    events: [
-      {
-        id: `mail-detail-${index}`,
-        type: "mail",
-        title: peer ? `${isReceived ? "from" : "to"} ${peer}` : `${eventClock(item)} ${message.type || "message"}`.trim(),
-        detail:
-          typeof message.content === "string"
-            ? message.content
-            : contentPreview(message.content || message),
-      },
-    ],
+    content: isPlainReceivedMessage ? `${peer || "Agent"}:\n${detail}` : `${selectedAgent} ${direction}`,
+    events: isPlainReceivedMessage
+      ? []
+      : [
+          {
+            id: `mail-detail-${index}`,
+            type: "mail",
+            title: peer ? `${isReceived ? "from" : "to"} ${peer}` : `${eventClock(item)} ${message.type || "message"}`.trim(),
+            detail,
+          },
+        ],
   };
 }
 
@@ -379,7 +490,12 @@ function App() {
   const [lastTraceEvents, setLastTraceEvents] = useState([]);
   const [chatText, setChatText] = useState("");
   const [attachmentUrl, setAttachmentUrl] = useState("");
-  const [sendMode, setSendMode] = useState("direct");
+  const [composerFiles, setComposerFiles] = useState([]);
+  const [dragOverComposer, setDragOverComposer] = useState(false);
+  const [mailText, setMailText] = useState("");
+  const [mailAttachmentUrl, setMailAttachmentUrl] = useState("");
+  const [mailFiles, setMailFiles] = useState([]);
+  const [dragOverMail, setDragOverMail] = useState(false);
   const [threadId, setThreadId] = useState("default");
   const [runId, setRunId] = useState("");
   const [streamMode, setStreamMode] = useState(pretty(DEFAULT_STREAM_MODE));
@@ -397,6 +513,10 @@ function App() {
   const latestPositionsRef = useRef({});
   const graphCanvasRef = useRef(null);
   const messagesRef = useRef(null);
+  const detailRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const mailFileInputRef = useRef(null);
+  const loadRequestRef = useRef(0);
 
   const spaces = useMemo(() => normalizeSpaces(communication), [communication]);
   const agentNames = agents.map((agent) => agent.agent_name);
@@ -441,6 +561,35 @@ function App() {
       })
       .slice(-80);
   }, [monitor, selectedAgent]);
+  const detailActivity = useMemo(
+    () => selectedAgentActivity.filter((item) => item.role !== "agent"),
+    [selectedAgentActivity],
+  );
+  const conversationMessages = useMemo(() => {
+    const base = normalizeChatMessages(chatMessages);
+    const seenReplies = new Set(
+      base
+        .filter((message) => String(message.role || "").replace(/\s+/g, "-") === "agent")
+        .map((message) => String(message.content || "").trim())
+        .filter(Boolean),
+    );
+    const activityReplies = selectedAgentActivity
+      .filter((item) => item.role === "agent")
+      .map((item) =>
+        makeChatMessage("agent", item.content, {
+          id: `activity-${item.id}`,
+          created_at: item.at || new Date().toISOString(),
+          source: "monitor",
+        }),
+      )
+      .filter((message) => {
+        const content = String(message.content || "").trim();
+        if (!content || seenReplies.has(content)) return false;
+        seenReplies.add(content);
+        return true;
+      });
+    return [...base, ...activityReplies];
+  }, [chatMessages, selectedAgentActivity]);
 
   async function run(label, operation, onError) {
     setBusy(true);
@@ -513,6 +662,7 @@ function App() {
   }
 
   async function loadAgent(agentName, sessions = chatSessions) {
+    const requestId = ++loadRequestRef.current;
     const [chat, main, runtimeResult, cardResult, brainResult] = await Promise.allSettled([
       api(`/user/chat/config/${agentName}`),
       api(`/admin/agents/${agentName}/config`),
@@ -523,6 +673,7 @@ function App() {
 
     if (chat.status === "rejected") throw chat.reason;
     if (main.status === "rejected") throw main.reason;
+    if (requestId !== loadRequestRef.current) return;
 
     const chatConfig = chat.value.chat || {};
     setThreadId(chatConfig.thread_id || "default");
@@ -562,7 +713,7 @@ function App() {
     const node = messagesRef.current;
     if (!node) return;
     node.scrollTop = node.scrollHeight;
-  }, [activeTab, chatMessages, selectedAgentActivity]);
+  }, [activeTab, conversationMessages.length, selectedAgent]);
 
   useEffect(() => {
     if (!sourceOptions.length) return;
@@ -732,55 +883,139 @@ function App() {
     });
   }
 
+  async function addFilesTo(fileList, setter) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    setStatus(`Reading ${files.length} file${files.length > 1 ? "s" : ""}`);
+    try {
+      const nextFiles = await Promise.all(files.map(fileToComposerAttachment));
+      setter((current) => [...current, ...nextFiles]);
+      setStatus("Done");
+    } catch (error) {
+      setStatus(`Error: ${error.message}`);
+    }
+  }
+
+  function addComposerFiles(fileList) {
+    return addFilesTo(fileList, setComposerFiles);
+  }
+
+  function addMailFiles(fileList) {
+    return addFilesTo(fileList, setMailFiles);
+  }
+
+  function removeComposerFile(fileId) {
+    setComposerFiles((current) => current.filter((file) => file.id !== fileId));
+  }
+
+  function removeMailFile(fileId) {
+    setMailFiles((current) => current.filter((file) => file.id !== fileId));
+  }
+
+  function handleComposerDrop(event) {
+    event.preventDefault();
+    setDragOverComposer(false);
+    addComposerFiles(event.dataTransfer?.files);
+  }
+
+  function handleMailDrop(event) {
+    event.preventDefault();
+    setDragOverMail(false);
+    addMailFiles(event.dataTransfer?.files);
+  }
+
+  function handleComposerPaste(event) {
+    const files = [];
+    for (const item of Array.from(event.clipboardData?.items || [])) {
+      if (item.kind !== "file") continue;
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+    if (!files.length) return;
+    event.preventDefault();
+    addComposerFiles(files);
+  }
+
+  function handleMailPaste(event) {
+    const files = [];
+    for (const item of Array.from(event.clipboardData?.items || [])) {
+      if (item.kind !== "file") continue;
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+    if (!files.length) return;
+    event.preventDefault();
+    addMailFiles(files);
+  }
+
+  function userMessagePreview(text, urlAttachment, files) {
+    const lines = [];
+    if (text) lines.push(text);
+    if (urlAttachment) lines.push(`链接附件：${urlAttachment}`);
+    if (files.length) {
+      lines.push(`附件：${files.map((file) => file.name).join(", ")}`);
+    }
+    return lines.join("\n") || "发送附件";
+  }
+
+  function filePayload(file) {
+    return {
+      link: file.link,
+      summary: file.summary || file.name,
+      name: file.name,
+      mime_type: file.mime_type,
+      kind: file.kind,
+      size: file.size,
+    };
+  }
+
   function sendChat(event) {
     event.preventDefault();
     if (!selectedAgent) return;
     const text = chatText.trim();
     const attachment = attachmentUrl.trim();
-    if (!text && !attachment) return;
-    const userMessage = makeChatMessage("user", text || attachment);
+    const files = composerFiles;
+    if (!text && !attachment && !files.length) return;
+    const userMessage = makeChatMessage("user", userMessagePreview(text, attachment, files), {
+      attachments: files,
+    });
     const optimistic = [...chatMessages, userMessage];
     setChatMessages(optimistic);
     persistChatMessages(selectedAgent, optimistic);
     setChatText("");
     setAttachmentUrl("");
+    setComposerFiles([]);
 
     run("Sending message", async () => {
-      if (sendMode === "direct" && !selectedServiceReady) {
+      if (!selectedServiceReady) {
         throw new Error("当前 AgentServer 还没启动注册。请先点右上角“启动服务”，或改用“发邮件”。");
       }
       const body = {
         agent_name: selectedAgent,
-        mode: sendMode,
+        mode: "direct",
         from: "user",
         text: text || null,
         thread_id: threadId,
         run_id: runId || null,
         stream_mode: parseJson(streamMode, "stream_mode"),
       };
-      if (attachment) body.attachments = [{ link: attachment, summary: "user attachment" }];
+      const fileAttachments = files.map(filePayload);
+      const fileParts = files.flatMap((file) => file.parts || []);
+      const attachmentsForMode = fileAttachments.filter((file) => file.kind === "image");
+      if (attachment || attachmentsForMode.length) {
+        body.attachments = [
+          ...(attachment ? [{ link: attachment, summary: "user attachment" }] : []),
+          ...attachmentsForMode,
+        ];
+      }
+      if (fileParts.length) body.parts = fileParts;
       const result = await api("/user/chat", {
         method: "POST",
         body: JSON.stringify(body),
       });
-      const traceEvents =
-        result.mode === "mail"
-          ? [
-              {
-                id: `mail-${result.message_id}`,
-                type: "mail",
-                title: result.wake_scheduled ? "mail delivered and wake scheduled" : "mail delivered",
-                detail: `message_id=${result.message_id}`,
-              },
-            ]
-          : buildTraceEvents(result);
+      const traceEvents = buildTraceEvents(result);
       setLastTraceEvents(traceEvents);
-      const reply =
-        result.mode === "mail"
-          ? result.wake_scheduled
-            ? `Mail delivered and wake scheduled: ${result.message_id}`
-            : `Mail delivered: ${result.message_id}`
-          : result.response?.reply || extractLastContent(result.response || result);
+      const reply = result.response?.reply || extractLastContent(result.response || result);
       const nextMessages = [...optimistic, makeChatMessage("agent", reply, { events: traceEvents })];
       setChatMessages(nextMessages);
       const nextSessions = {
@@ -798,6 +1033,39 @@ function App() {
       const nextMessages = [...optimistic, makeChatMessage("agent error", error.message)];
       setChatMessages(nextMessages);
       persistChatMessages(selectedAgent, nextMessages);
+    });
+  }
+
+  function sendMail(event) {
+    event.preventDefault();
+    if (!selectedAgent) return;
+    const text = mailText.trim();
+    const attachment = mailAttachmentUrl.trim();
+    const files = mailFiles;
+    if (!text && !attachment && !files.length) return;
+    run("Sending mail", async () => {
+      const attachments = [
+        ...(attachment ? [{ link: attachment, summary: "user attachment" }] : []),
+        ...files.map(filePayload),
+      ];
+      const result = await api("/user/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          agent_name: selectedAgent,
+          mode: "mail",
+          from: "user",
+          text: text || null,
+          attachments,
+          thread_id: threadId,
+          run_id: runId || null,
+          stream_mode: parseJson(streamMode, "stream_mode"),
+        }),
+      });
+      setMailText("");
+      setMailAttachmentUrl("");
+      setMailFiles([]);
+      setStatus(result.wake_scheduled ? `邮件已投递并唤醒：${result.message_id}` : `邮件已投递：${result.message_id}`);
+      await refreshMonitor();
     });
   }
 
@@ -1104,6 +1372,10 @@ function App() {
             <MessageSquare size={16} />
             对话
           </button>
+          <button className={activeTab === "mail" ? "active" : ""} onClick={() => setActiveTab("mail")}>
+            <Mail size={16} />
+            邮件
+          </button>
           <button className={activeTab === "prompt" ? "active" : ""} onClick={() => setActiveTab("prompt")}>
             <Bot size={16} />
             提示词
@@ -1226,47 +1498,88 @@ function App() {
               <div className="conversation chat-lane">
                 <div className="lane-heading">对话</div>
                 <div className="messages" ref={messagesRef}>
-                  {chatMessages.map((message, index) => {
+                  {conversationMessages.map((message, index) => {
                     const roleClass = String(message.role || "").replace(/\s+/g, "-");
                     return (
                       <div key={message.id || `${message.role}-${index}`} className={`bubble ${roleClass}`}>
                         <div>{message.content}</div>
+                        {Array.isArray(message.attachments) && message.attachments.length > 0 && (
+                          <div className="message-attachments">
+                            {message.attachments.map((file) => (
+                              <span key={file.id || `${file.name}-${file.size}`} className={`attachment-pill ${file.kind || "file"}`}>
+                                {file.kind === "image" ? <Image size={14} /> : <FileText size={14} />}
+                                {file.name || file.summary || "attachment"}
+                                {file.size ? <small>{formatBytes(file.size)}</small> : null}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
                 </div>
-                <form className="composer" onSubmit={sendChat}>
+                <form
+                  className={dragOverComposer ? "composer drag-over" : "composer"}
+                  onSubmit={sendChat}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setDragOverComposer(true);
+                  }}
+                  onDragLeave={() => setDragOverComposer(false)}
+                  onDrop={handleComposerDrop}
+                  onPaste={handleComposerPaste}
+                >
                   <textarea value={chatText} onChange={(event) => setChatText(event.target.value)} placeholder="输入消息" />
                   <input
                     value={attachmentUrl}
                     onChange={(event) => setAttachmentUrl(event.target.value)}
                     placeholder="图片 URL、data URL 或文件链接"
                   />
+                  <input
+                    ref={fileInputRef}
+                    className="hidden-file-input"
+                    type="file"
+                    multiple
+                    accept="image/*,.md,.markdown,.txt,.json,.csv,.tsv,.log,.pdf"
+                    onChange={(event) => {
+                      addComposerFiles(event.target.files);
+                      event.target.value = "";
+                    }}
+                  />
+                  <div className="upload-strip">
+                    <button type="button" className="secondary" onClick={() => fileInputRef.current?.click()}>
+                      <FileText size={16} />
+                      添加文件
+                    </button>
+                    <span>拖拽图片、md、txt、PDF 到这里</span>
+                  </div>
+                  {composerFiles.length > 0 && (
+                    <div className="composer-files">
+                      {composerFiles.map((file) => (
+                        <button key={file.id} type="button" className="file-chip" onClick={() => removeComposerFile(file.id)} title="点击移除">
+                          {file.kind === "image" ? <Image size={14} /> : <FileText size={14} />}
+                          <span>{file.name}</span>
+                          <small>{formatBytes(file.size)}</small>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <div className="composer-actions">
-                    <select value={sendMode} onChange={(event) => setSendMode(event.target.value)}>
-                      <option value="direct">正常发送</option>
-                      <option value="mail">发邮件</option>
-                    </select>
                     <button type="submit">
                       <Send size={16} />
-                      发送
+                      发送消息
                     </button>
                   </div>
                 </form>
               </div>
-              <aside className="detail-lane">
+              <aside className="detail-lane" ref={detailRef}>
                 <div className="lane-heading">细节</div>
-                {selectedAgentActivity.length > 0 ? (
-                  selectedAgentActivity.map((message) => (
-                    message.role === "agent" ? (
-                      <div key={message.id} className="detail-card message">
-                        <strong>Agent 回复</strong>
-                        <p>{message.content}</p>
-                      </div>
-                    ) : (
+                {detailActivity.length > 0 ? (
+                  <div className="detail-list">
+                    {detailActivity.map((message) => (
                       <div key={message.id} className={`detail-card ${message.kind || "tool"}`}>
                         <div className="behavior-title">
-                          <span>{message.kind === "tool" ? "工具" : "消息"}</span>
+                          <span>{message.kind === "tool" ? "工具" : "邮件"}</span>
                           <strong>{message.content}</strong>
                         </div>
                         {Array.isArray(message.events) && message.events.length > 0 && (
@@ -1280,15 +1593,17 @@ function App() {
                           </div>
                         )}
                       </div>
-                    )
-                  ))
+                    ))}
+                  </div>
                 ) : lastTraceEvents.filter(isVisibleTraceEvent).length ? (
-                  lastTraceEvents.filter(isVisibleTraceEvent).map((eventItem) => (
-                    <div key={eventItem.id || `${eventItem.title}-${eventItem.detail}`} className={`detail-card ${eventItem.type}`}>
-                      <strong>{eventItem.title}</strong>
-                      {eventItem.detail ? <p>{eventItem.detail}</p> : null}
-                    </div>
-                  ))
+                  <div className="detail-list">
+                    {lastTraceEvents.filter(isVisibleTraceEvent).map((eventItem) => (
+                      <div key={eventItem.id || `${eventItem.title}-${eventItem.detail}`} className={`detail-card ${eventItem.type}`}>
+                        <strong>{eventItem.title}</strong>
+                        {eventItem.detail ? <p>{eventItem.detail}</p> : null}
+                      </div>
+                    ))}
+                  </div>
                 ) : (
                   <p className="note">工具调用、邮件收发和 Agent 行为会显示在这里。</p>
                 )}
@@ -1319,6 +1634,88 @@ function App() {
                   </p>
                 ))}
               </div>
+            </aside>
+          </section>
+        )}
+
+        {activeTab === "mail" && (
+          <section className="mail-view">
+            <div className="mail-compose-panel">
+              <div className="lane-heading">发送邮件</div>
+              <form
+                className={dragOverMail ? "composer mail-composer drag-over" : "composer mail-composer"}
+                onSubmit={sendMail}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setDragOverMail(true);
+                }}
+                onDragLeave={() => setDragOverMail(false)}
+                onDrop={handleMailDrop}
+                onPaste={handleMailPaste}
+              >
+                <label>收件 Agent</label>
+                <input value={selectedAgent} readOnly />
+                <label>邮件正文</label>
+                <textarea value={mailText} onChange={(event) => setMailText(event.target.value)} placeholder="输入要投递到 inbox 的邮件内容" />
+                <label>URL 附件</label>
+                <input
+                  value={mailAttachmentUrl}
+                  onChange={(event) => setMailAttachmentUrl(event.target.value)}
+                  placeholder="图片 URL、文档 URL、data URL 或文件链接"
+                />
+                <input
+                  ref={mailFileInputRef}
+                  className="hidden-file-input"
+                  type="file"
+                  multiple
+                  accept="image/*,.md,.markdown,.txt,.json,.csv,.tsv,.log,.pdf"
+                  onChange={(event) => {
+                    addMailFiles(event.target.files);
+                    event.target.value = "";
+                  }}
+                />
+                <div className="upload-strip">
+                  <button type="button" className="secondary" onClick={() => mailFileInputRef.current?.click()}>
+                    <FileText size={16} />
+                    添加邮件附件
+                  </button>
+                  <span>拖拽或粘贴图片、md、txt、PDF 到这里</span>
+                </div>
+                {mailFiles.length > 0 && (
+                  <div className="composer-files">
+                    {mailFiles.map((file) => (
+                      <button key={file.id} type="button" className="file-chip" onClick={() => removeMailFile(file.id)} title="点击移除">
+                        {file.kind === "image" ? <Image size={14} /> : <FileText size={14} />}
+                        <span>{file.name}</span>
+                        <small>{formatBytes(file.size)}</small>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <p className="mode-note">邮件会写入目标 Agent 的 MainServer inbox，并使用目标 Agent 当前主线程唤醒处理。</p>
+                <div className="composer-actions">
+                  <button type="submit">
+                    <Mail size={16} />
+                    发送邮件
+                  </button>
+                </div>
+              </form>
+            </div>
+            <aside className="mail-history-panel">
+              <div className="lane-heading">最近邮件</div>
+              {(monitor.recent_mail || [])
+                .filter((item) => item?.message?.from === selectedAgent || item?.message?.to === selectedAgent)
+                .slice()
+                .reverse()
+                .map((item, index) => (
+                  <div key={`${item.at}-${index}`} className="mail-row">
+                    <strong>
+                      {item.message?.from} {"->"} {item.message?.to}
+                    </strong>
+                    <span>{item.message?.type}</span>
+                    <p>{typeof item.message?.content === "string" ? item.message.content : pretty(item.message?.content)}</p>
+                  </div>
+                ))}
             </aside>
           </section>
         )}

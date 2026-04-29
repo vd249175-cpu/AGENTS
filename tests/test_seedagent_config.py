@@ -73,7 +73,7 @@ class SeedAgentConfigTests(unittest.TestCase):
                         "to": "SeedAgent",
                         "type": "message",
                         "content": "reply token beta-42",
-                        "attachments": [],
+                        "attachments": [{"link": "/workspace/mail/KnowledgeSeedAgent__abc/novel.txt"}],
                     }
                 ]
 
@@ -91,6 +91,10 @@ class SeedAgentConfigTests(unittest.TestCase):
         self.assertIsNotNone(update)
         self.assertEqual(update["receiveMessagesLastCount"], 1)
         self.assertIn("reply token beta-42", update["receiveMessagesLastInbox"])
+        self.assertIn("UTF-8", update["receiveMessagesLastInbox"])
+        self.assertIn("read_file", update["receiveMessagesLastInbox"])
+        self.assertIn("bytes ... head b", update["receiveMessagesLastInbox"])
+        self.assertIn("/workspace/mail/KnowledgeSeedAgent__abc/novel.txt", update["receiveMessagesLastInbox"])
         self.assertEqual(update["messages"][0].name, "agent_inbox")
         self.assertIn("reply token beta-42", update["messages"][0].content)
         self.assertEqual(events[0]["event"], "inbox_persisted")

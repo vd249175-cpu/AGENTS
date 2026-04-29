@@ -280,6 +280,31 @@ label {
   grid-template-columns: minmax(0, 1fr) 310px;
 }
 
+.mail-view {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(420px, 0.9fr) minmax(360px, 1fr);
+  background: #f7f9fc;
+}
+
+.mail-compose-panel {
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  background: #fff;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.mail-history-panel {
+  min-height: 0;
+  overflow: auto;
+  background: #fff;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: start;
+}
+
 .chat-columns {
   min-width: 0;
   min-height: 0;
@@ -420,7 +445,7 @@ label {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   align-content: start;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .messages {
@@ -428,6 +453,7 @@ label {
   min-height: 300px;
   overflow: auto;
   padding: 18px;
+  scroll-behavior: smooth;
 }
 
 .bubble {
@@ -445,6 +471,10 @@ label {
 }
 
 .bubble.agent {
+  background: #fff;
+}
+
+.bubble.monitor {
   background: #fff;
 }
 
@@ -493,6 +523,31 @@ label {
   color: #8f1f18;
 }
 
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.attachment-pill {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f8fafc;
+  color: var(--muted);
+  padding: 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.attachment-pill small {
+  color: #8490a3;
+}
+
 .activity-stream {
   margin-top: 16px;
   padding-top: 14px;
@@ -536,6 +591,13 @@ label {
   box-shadow: var(--shadow);
 }
 
+.detail-list {
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 14px;
+  scrollbar-gutter: stable;
+}
+
 .detail-card.message {
   border-left-color: var(--green);
   background: #f7fcf9;
@@ -564,8 +626,96 @@ label {
   gap: 8px;
 }
 
+.composer.drag-over {
+  background: #f0f6ff;
+  box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.24);
+}
+
 .composer textarea {
   min-height: 84px;
+}
+
+.mail-composer {
+  align-content: start;
+  overflow: auto;
+  border-top: 0;
+}
+
+.mail-composer textarea {
+  min-height: 190px;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.upload-strip {
+  min-height: 40px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.upload-strip button {
+  flex: 0 0 auto;
+}
+
+.composer-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.file-chip {
+  max-width: 240px;
+  min-height: 30px;
+  border-color: var(--line);
+  background: #fff;
+  color: var(--text);
+  padding: 0 8px;
+}
+
+.file-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-chip small {
+  color: var(--muted);
+}
+
+.send-mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.send-mode-switch button {
+  min-height: 38px;
+  border-color: var(--line);
+  background: #fff;
+  color: var(--text);
+}
+
+.send-mode-switch button.active {
+  border-color: var(--blue);
+  background: #e8f0ff;
+  color: var(--blue);
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.2);
+}
+
+.mode-note {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .composer-actions {

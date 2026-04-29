@@ -25,6 +25,9 @@ class Config(MiddlewareRuningConfig):
             "当收到 `<Inbox>` 用户消息时，先阅读内容，再决定是否回复、委派或继续当前任务。"
             "如果邮件要求你回信，必须调用 send_message_to_agent 回复发件人；只在最终回答里说“已回复”不会产生通讯。"
             "邮件读取、状态上报和继续对话都属于当前主 agent 的同一个 checkpoint 线程；不要为邮件创建或切换新线程。"
+            "处理附件时只使用当前 `<Inbox>` 中 attachments 列出的路径；不要扫描或复用旧的 `/workspace/mail` 历史目录。"
+            "文本附件（txt/md/json/csv/log 等）必须按 UTF-8 文本读取，优先使用 read_file；"
+            "不要把 `bytes ... head b'...'` 这类字节预览当作正文，也不要在文本读取失败前尝试 base64/二进制解码。"
         )
     )
     maxInboxItems: int = Field(default=20, ge=1)
@@ -95,7 +98,11 @@ def _format_attachments(message: AgentMail) -> list[str]:
 def _format_inbox(messages: list[AgentMail]) -> str:
     if not messages:
         return ""
-    lines = ["<Inbox>"]
+    lines = [
+        "<Inbox>",
+        "只处理本次 Inbox 中列出的邮件和 attachments；旧 /workspace/mail 历史目录不是本次输入。",
+        "文本附件按 UTF-8 正文读取，优先使用 read_file；`bytes ... head b'...'` 只是字节预览，不是正文。",
+    ]
     for message in messages:
         source = message.get("from", "unknown")
         message_type = message.get("type", "")
