@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import tempfile
@@ -303,6 +304,47 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.assertTrue(knowledge_file.exists())
         self.assertTrue(checkpoint_file.parent.is_dir())
         self.assertTrue(memory_checkpoint_file.parent.is_dir())
+        self.assertFalse(response.json()["reload"]["attempted"])
+        self.assertEqual(response.json()["reload"]["reason"], "agent_not_registered")
+
+    def test_admin_clear_runtime_reloads_registered_agent_after_checkpoint_delete(self) -> None:
+        agent_name = "CheckpointReloadAgent"
+        agent_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / agent_name
+        shutil.rmtree(agent_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, agent_root, True)
+        checkpoint_file = agent_root / "Agent" / "store" / "checkpoints" / "langgraph.sqlite3"
+        checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_file.write_text("data", encoding="utf-8")
+        calls = []
+
+        def fake_post_json(url, payload, timeout):
+            calls.append({"url": url, "payload": payload, "timeout": timeout})
+            return {"ok": True}
+
+        original_post_json = self.main_server.post_json
+        self.main_server.post_json = fake_post_json
+        self.addCleanup(setattr, self.main_server, "post_json", original_post_json)
+
+        self.client.post(
+            "/agents/register",
+            json={"agent_name": agent_name, "metadata": {"service_url": "http://127.0.0.1:8898"}},
+        )
+
+        response = self.client.post(
+            f"/admin/agents/{agent_name}/runtime/clear",
+            json={
+                "include_store": False,
+                "include_mail": False,
+                "include_knowledge": False,
+                "include_checkpoints": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(checkpoint_file.exists())
+        self.assertEqual(calls[0]["url"], "http://127.0.0.1:8898/reload-config")
+        self.assertEqual(calls[0]["payload"], {})
+        self.assertTrue(response.json()["reload"]["ok"])
 
     def test_admin_clear_runtime_clears_frontend_agent_history(self) -> None:
         agent_name = "HistoryCleanupAgent"
@@ -364,7 +406,7 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, agent_root, True)
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.write_text(
-            '{"agentName":"RuntimeConfigAgent","knowledgeRunId":"RuntimeConfigAgent-knowledge"}',
+            '{"knowledgeRunId":"RuntimeConfigAgent-knowledge"}',
             encoding="utf-8",
         )
 
@@ -381,6 +423,82 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.assertTrue(payload["uses_local"])
         self.assertEqual(payload["config"]["knowledgeRunId"], "RuntimeConfigAgent-knowledge-v2")
         self.assertFalse(payload["config"]["enableSendMessagesMiddleware"])
+        self.assertFalse(payload["reload"]["attempted"])
+        self.assertEqual(payload["reload"]["reason"], "agent_not_registered")
+
+    def test_agent_config_endpoint_merges_and_updates_runtime_fields(self) -> None:
+        agent_name = "UnifiedConfigAgent"
+        agent_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / agent_name
+        config_file = agent_root / "Agent" / f"{agent_name}Config.example.json"
+        shutil.rmtree(agent_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, agent_root, True)
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(
+            '{"chatModel":"gpt-old","knowledgeRunId":"UnifiedConfigAgent-knowledge"}',
+            encoding="utf-8",
+        )
+
+        response = self.client.get(f"/admin/agents/{agent_name}/config")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["config"]["chatModel"], "gpt-old")
+
+        response = self.client.put(
+            f"/admin/agents/{agent_name}/config",
+            json={
+                "template": "SeedAgent",
+                "scope": ["SeedAgent"],
+                "chatModel": "gpt-new",
+                "chatApiKey": "test-key",
+                "knowledgeRunId": "UnifiedConfigAgent-knowledge-v2",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["center_config"], {"scope": ["SeedAgent"], "template": "SeedAgent"})
+        self.assertEqual(payload["config"]["chatModel"], "gpt-new")
+        self.assertEqual(payload["config"]["template"], "SeedAgent")
+        self.assertFalse(payload["reload"]["attempted"])
+        runtime = json.loads((agent_root / "Agent" / f"{agent_name}Config.local.json").read_text(encoding="utf-8"))
+        self.assertEqual(runtime["chatModel"], "gpt-new")
+        self.assertEqual(runtime["chatApiKey"], "test-key")
+        stored_center = self.client.get(f"/admin/agents/{agent_name}/config").json()["center_config"]
+        self.assertNotIn("chatModel", stored_center)
+
+    def test_runtime_config_endpoint_reloads_registered_agent_service(self) -> None:
+        agent_name = "RuntimeReloadAgent"
+        agent_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / agent_name
+        config_file = agent_root / "Agent" / f"{agent_name}Config.example.json"
+        shutil.rmtree(agent_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, agent_root, True)
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(
+            '{"knowledgeRunId":"RuntimeReloadAgent-knowledge"}',
+            encoding="utf-8",
+        )
+        calls = []
+
+        def fake_post_json(url, payload, timeout):
+            calls.append({"url": url, "payload": payload, "timeout": timeout})
+            return {"ok": True, "config": {"knowledgeRunId": "RuntimeReloadAgent-knowledge-v2"}}
+
+        original_post_json = self.main_server.post_json
+        self.main_server.post_json = fake_post_json
+        self.addCleanup(setattr, self.main_server, "post_json", original_post_json)
+
+        self.client.post(
+            "/agents/register",
+            json={"agent_name": agent_name, "metadata": {"service_url": "http://127.0.0.1:8899"}},
+        )
+        response = self.client.put(
+            f"/admin/agents/{agent_name}/runtime-config",
+            json={"knowledgeRunId": "RuntimeReloadAgent-knowledge-v2"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(calls[0]["url"], "http://127.0.0.1:8899/reload-config")
+        self.assertEqual(calls[0]["payload"], {})
+        self.assertTrue(response.json()["reload"]["ok"])
 
     def test_agent_card_endpoint_reads_and_writes_public_card(self) -> None:
         agent_name = "CardConfigAgent"

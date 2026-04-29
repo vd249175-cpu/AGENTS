@@ -60,7 +60,7 @@ class Middleware(BaseAgentMiddleware):
             shardCount=self.config.shardCount,
             maxWorkers=self.config.maxWorkers,
             referenceBytes=self.config.referenceBytes,
-            agentName=self.config.agentName,
+            runtimeAgentName=self.config.runtimeAgentName,
         )
         ingest_tool = IngestKnowledgeTool(config=tool_config)
         self.toolConfig = {

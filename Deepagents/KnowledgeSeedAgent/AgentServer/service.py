@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import (
-    AGENT_SPEC,
+    AGENT_NAME,
     Config as KnowledgeSeedAgentConfig,
     WORKSPACE_ROOT,
     SeedMainAgent,
@@ -43,6 +43,21 @@ def _jsonable(data: Any) -> Any:
     if isinstance(data, datetime):
         return data.astimezone(timezone.utc).isoformat()
     return repr(data)
+
+
+def _runtime_config_summary(config: Any) -> dict[str, Any]:
+    enabled_middlewares = sorted(
+        key for key, value in config.model_dump().items() if key.startswith("enable") and value is True
+    )
+    return {
+        "chatModelProvider": config.chatModelProvider,
+        "chatModel": config.chatModel,
+        "embeddingProvider": config.embeddingProvider,
+        "embeddingModel": config.embeddingModel,
+        "knowledgeRunId": config.knowledgeRunId,
+        "checkpointPath": config.checkpointPath,
+        "enabledMiddlewares": enabled_middlewares,
+    }
 
 
 def _post_json(url: str, payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
@@ -73,7 +88,7 @@ def _env_prefix(agent_name: str) -> str:
 
 
 class ServiceConfig(BaseModel):
-    agent_name: str = Field(default=AGENT_SPEC.name)
+    agent_name: str = Field(default=AGENT_NAME)
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8010, ge=1, le=65535)
     main_server_url: str = Field(default="http://127.0.0.1:8000")
@@ -89,10 +104,10 @@ def load_service_config(source: str | Path | None = None) -> ServiceConfig:
             raise ValueError(f"Invalid service config: {path}")
         data.update(loaded)
 
-    prefix = _env_prefix(str(data.get("agent_name", AGENT_SPEC.name)))
+    prefix = _env_prefix(str(data.get("agent_name", AGENT_NAME)))
     env_host_key = f"{prefix}_HOST"
     env_port_key = f"{prefix}_PORT"
-    data["agent_name"] = os.getenv("AGENT_NAME") or data.get("agent_name", AGENT_SPEC.name)
+    data["agent_name"] = os.getenv("AGENT_NAME") or data.get("agent_name", AGENT_NAME)
     data["host"] = os.getenv(env_host_key) or os.getenv("AGENT_HOST") or data.get("host", "127.0.0.1")
     data["port"] = int(os.getenv(env_port_key) or os.getenv("AGENT_PORT") or data.get("port", 8010))
     data["main_server_url"] = os.getenv("MAIN_SERVER_URL") or data.get(
@@ -196,7 +211,7 @@ class AgentObserver:
         agent_name: str | None = None,
         scope: Any = None,
     ) -> None:
-        self.agent_name = agent_name or os.getenv("AGENT_NAME") or AGENT_SPEC.name
+        self.agent_name = agent_name or os.getenv("AGENT_NAME") or AGENT_NAME
         self.host = socket.gethostname()
         self.pid = os.getpid()
         self.scope = scope
@@ -291,6 +306,15 @@ class AgentObserver:
 class KnowledgeSeedAgentRuntime:
     def __init__(self) -> None:
         self.main_agent: SeedMainAgent | None = None
+
+    async def reload_config(self, *, comm: AgentComm, agent_name: str) -> SeedMainAgent:
+        agent_config = KnowledgeSeedAgentConfig.load_config_knowledge_seed_agent()
+        next_agent = await abuild_main_agent(comm=comm, config=agent_config)
+        previous_agent = self.main_agent
+        self.main_agent = next_agent
+        if previous_agent is not None:
+            await previous_agent.aclose()
+        return next_agent
 
     async def astream(
         self,
@@ -463,10 +487,7 @@ def create_app(scope: Any = None) -> FastAPI:
         asyncio.get_event_loop().set_exception_handler(_loop_exception_handler)
         app.state.runtime = KnowledgeSeedAgentRuntime()
         app.state.comm = AgentComm(main_server_url, observer.agent_name)
-        agent_config = KnowledgeSeedAgentConfig.load_config_knowledge_seed_agent()
-        if agent_config.agentName != observer.agent_name:
-            agent_config = agent_config.model_copy(update={"agentName": observer.agent_name})
-        app.state.runtime.main_agent = await abuild_main_agent(comm=app.state.comm, config=agent_config)
+        await app.state.runtime.reload_config(comm=app.state.comm, agent_name=observer.agent_name)
         await observer.register()
         await observer.set_status("running", phase="startup", step="ready")
         try:
@@ -486,6 +507,37 @@ def create_app(scope: Any = None) -> FastAPI:
     @app.get("/status")
     async def status() -> dict[str, Any]:
         return observer.state.snapshot()
+
+    @app.post("/reload-config")
+    async def reload_config() -> dict[str, Any]:
+        if observer.state.running:
+            raise HTTPException(status_code=409, detail="agent is already running")
+        await observer.set_status("running", phase="reload_config", step="start")
+        try:
+            main_agent = await app.state.runtime.reload_config(comm=app.state.comm, agent_name=observer.agent_name)
+            await observer.set_status(
+                "running",
+                phase="ready",
+                step="waiting",
+                metadata={"runtime_config_reloaded_at": _now()},
+            )
+            return {
+                "ok": True,
+                "agent_name": observer.agent_name,
+                "config": _runtime_config_summary(main_agent.config),
+                "agent": observer.state.snapshot(),
+            }
+        except Exception as exc:
+            await observer.report_error(
+                {
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                    "phase": "reload_config",
+                    "metadata": observer.state.metadata,
+                }
+            )
+            raise
 
     @app.post("/event")
     async def publish_event(payload: AgentEventPayload) -> dict[str, Any]:

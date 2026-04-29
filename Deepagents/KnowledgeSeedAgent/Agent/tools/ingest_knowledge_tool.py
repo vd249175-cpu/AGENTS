@@ -20,7 +20,10 @@ class Config(StrictConfig):
     shardCount: int = Field(default=4, ge=1, description="Default shard count for long documents.")
     maxWorkers: int = Field(default=2, ge=1, description="Default worker count for long documents.")
     referenceBytes: int = Field(default=6000, ge=1, description="Reference byte window for long documents.")
-    agentName: str = Field(default="KnowledgeSeedAgent", description="Agent name used for memory run identity.")
+    runtimeAgentName: str = Field(
+        default="KnowledgeSeedAgent",
+        description="Runtime agent name used for memory run identity.",
+    )
 
 
 def _context_value(context: Any, fallback: Config, key: str) -> Any:
@@ -105,7 +108,7 @@ class IngestKnowledgeTool:
         key_fields = {
             name: getattr(config, name, None)
             for name in (
-                "agentName",
+                "runtimeAgentName",
                 "knowledgeRunId",
                 "neo4jUri",
                 "neo4jUsername",
@@ -127,7 +130,7 @@ class IngestKnowledgeTool:
         if self._chunk_apply is None or self._chunk_apply_key != cache_key:
             self.close()
             self._chunk_apply = build_chunk_apply_tool(
-                agent_name=str(getattr(effective_config, "agentName", self.config.agentName)),
+                agent_name=str(getattr(effective_config, "runtimeAgentName", self.config.runtimeAgentName)),
                 config=effective_config,
             )
             self._chunk_apply_key = cache_key

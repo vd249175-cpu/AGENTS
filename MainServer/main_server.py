@@ -160,6 +160,94 @@ class CreateAgentRequest(BaseModel):
     scope: Any = None
 
 
+RUNTIME_CONFIG_KEYS = {
+    "systemPromptExtra",
+    "chatModelProvider",
+    "chatModel",
+    "chatBaseUrl",
+    "chatApiKey",
+    "chatTemperature",
+    "ollamaBaseUrl",
+    "embeddingProvider",
+    "embeddingModel",
+    "embeddingBaseUrl",
+    "embeddingApiKey",
+    "embeddingDimensions",
+    "neo4jUri",
+    "neo4jUsername",
+    "neo4jPassword",
+    "neo4jDatabase",
+    "enableMemoryMiddleware",
+    "enableSkillsMiddleware",
+    "enableKnowledgeManagerMiddleware",
+    "enableKnowledgeIngestMiddleware",
+    "enableReceiveMessagesMiddleware",
+    "enableSendMessagesMiddleware",
+    "enableAgentStepTraceMiddleware",
+    "enableDebugTraceMiddleware",
+    "defaultRunId",
+    "defaultThreadId",
+    "checkpointPath",
+    "defaultDestination",
+    "defaultMessageType",
+    "hideToolMessageContent",
+    "blockSelfTarget",
+    "maxInboxItems",
+    "peekPeersInGuidance",
+    "resume",
+    "chunkApplyDeriveDocumentRunId",
+    "chunkApplyCheckpointPath",
+    "chunkApplyCachePath",
+    "chunkApplyStagingPath",
+    "chunkApplyRecursionLimit",
+    "shardCount",
+    "maxWorkers",
+    "referenceBytes",
+    "chunkApplyMaxRetries",
+    "chunkHistoryLineCount",
+    "chunkActiveLineCount",
+    "chunkPreviewLineCount",
+    "chunkLineWrapWidth",
+    "chunkWindowBackBytes",
+    "chunkWindowForwardBytes",
+    "chunkTraceLimit",
+    "chunkMaxRetries",
+    "documentEdgeDistance",
+    "persistKeywordEmbeddings",
+    "knowledgeRunId",
+    "knowledgeTraceLimit",
+    "knowledgeManagerSystemPrompt",
+    "knowledgeManagerTemperature",
+    "knowledgeManagerDebug",
+    "streamInnerKnowledgeAgent",
+    "innerKnowledgeRecursionLimit",
+    "managementDiscoveryMaxItems",
+    "managementDiscoveryMaxTotalChars",
+    "managementDiscoveryMaxSummaryChars",
+    "managementDiscoveryScanMessageLimit",
+    "documentQueryTraceLimit",
+    "documentWriteTraceLimit",
+    "graphQueryTraceLimit",
+    "graphWriteTraceLimit",
+    "graphQueryKeywordTopK",
+    "graphQueryKeywordTopKLimit",
+    "graphQueryDistanceTopK",
+    "graphQueryDistanceTopKLimit",
+    "graphQueryDistanceMaxDistance",
+    "graphQueryUsefulMaxItems",
+    "graphQueryUsefulMaxTotalChars",
+    "graphQueryBlockedMaxItems",
+    "graphQueryBlockedMaxTotalChars",
+    "agentStepTraceEventType",
+    "agentStepTraceEmitFullState",
+    "debugTraceEventType",
+    "debugTraceTruncateLimit",
+}
+
+MAIN_SERVER_CONFIG_KEYS = {"template", "scope", "chat", "enabled"}
+OBSOLETE_AGENT_CONFIG_KEYS = {"agentName", "agentRole", "agentDescription", "agentResponsibilities"}
+
+
 def _record_service_url(record: "AgentRecord") -> str | None:
     metadata = record.metadata or {}
     for key in ("service_url", "base_url", "url"):
@@ -171,6 +259,80 @@ def _record_service_url(record: "AgentRecord") -> str | None:
     if host and port:
         return f"http://{host}:{port}".rstrip("/")
     return None
+
+
+async def _reload_registered_agent_runtime(agent_name: str) -> dict[str, Any]:
+    record = _registry.get(agent_name)
+    if record is None:
+        return {"attempted": False, "ok": False, "reason": "agent_not_registered"}
+    service_url = _record_service_url(record)
+    if service_url is None:
+        return {"attempted": False, "ok": False, "reason": "service_url_missing"}
+    try:
+        response = await asyncio.to_thread(post_json, f"{service_url}/reload-config", {}, 120.0)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        return {
+            "attempted": True,
+            "ok": False,
+            "status_code": exc.code,
+            "detail": detail or exc.reason,
+            "service_url": service_url,
+        }
+    except urllib.error.URLError as exc:
+        return {
+            "attempted": True,
+            "ok": False,
+            "detail": f"agent service unreachable: {exc.reason}",
+            "service_url": service_url,
+        }
+    except Exception as exc:
+        return {
+            "attempted": True,
+            "ok": False,
+            "detail": f"{type(exc).__name__}: {exc}",
+            "service_url": service_url,
+        }
+    return {"attempted": True, "ok": True, "service_url": service_url, "response": _jsonable(response)}
+
+
+def _read_agent_runtime_config_or_empty(agent_name: str) -> dict[str, Any]:
+    try:
+        result = read_agent_runtime_config(agent_name)
+    except FileNotFoundError:
+        return {}
+    config = result.get("config", {})
+    return dict(config) if isinstance(config, dict) else {}
+
+
+def _merged_agent_config(agent_name: str) -> dict[str, Any]:
+    center_config = get_agent_config(agent_name)
+    runtime_config = _read_agent_runtime_config_or_empty(agent_name)
+    return {**center_config, **runtime_config}
+
+
+def _split_agent_config_payload(agent_name: str, payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(payload, dict):
+        raise ValueError("agent config payload must be an object")
+    runtime_keys = set(_read_agent_runtime_config_or_empty(agent_name)) | RUNTIME_CONFIG_KEYS
+    center_payload: dict[str, Any] = {}
+    runtime_payload: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in OBSOLETE_AGENT_CONFIG_KEYS:
+            continue
+        if key == "runtime" and isinstance(value, dict):
+            runtime_payload.update(
+                {runtime_key: runtime_value for runtime_key, runtime_value in value.items() if runtime_key not in OBSOLETE_AGENT_CONFIG_KEYS}
+            )
+            continue
+        if key in MAIN_SERVER_CONFIG_KEYS:
+            center_payload[key] = value
+            continue
+        if key in runtime_keys:
+            runtime_payload[key] = value
+            continue
+        center_payload[key] = value
+    return center_payload, runtime_payload
 
 
 @dataclass
@@ -800,12 +962,27 @@ async def admin_create_agent(payload: CreateAgentRequest) -> dict[str, Any]:
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    config_patch = dict(payload.config)
-    config_patch.setdefault("template", payload.source_agent)
+    try:
+        center_patch, runtime_patch = _split_agent_config_payload(payload.agent_name, payload.config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    center_patch.setdefault("template", payload.source_agent)
     if payload.scope is not None:
-        config_patch["scope"] = payload.scope
-    config = update_agent_config(payload.agent_name, config_patch)
-    return {"ok": True, "agent": result, "config": config}
+        center_patch["scope"] = payload.scope
+    config = update_agent_config(payload.agent_name, center_patch)
+    runtime_result = None
+    if runtime_patch:
+        try:
+            runtime_result = write_agent_runtime_config(payload.agent_name, runtime_patch, merge=True)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "agent": result,
+        "config": _merged_agent_config(payload.agent_name),
+        "center_config": config,
+        "runtime_config": runtime_result,
+    }
 
 
 @app.delete("/admin/agents/{agent_name}")
@@ -880,9 +1057,13 @@ async def admin_monitor() -> dict[str, Any]:
 
 @app.get("/admin/agents/{agent_name}/config")
 async def admin_get_agent_config(agent_name: str) -> dict[str, Any]:
+    runtime_config = _read_agent_runtime_config_or_empty(agent_name)
+    center_config = get_agent_config(agent_name)
     return {
         "agent_name": agent_name,
-        "config": get_agent_config(agent_name),
+        "config": {**center_config, **runtime_config},
+        "center_config": center_config,
+        "runtime_config": runtime_config,
         "registered": _registry.get(agent_name).snapshot() if agent_name in _registry else None,
     }
 
@@ -904,7 +1085,8 @@ async def admin_patch_agent_runtime_config(agent_name: str, payload: dict[str, A
         result = write_agent_runtime_config(agent_name, payload, merge=True)
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "agent_name": agent_name, **result}
+    reload_result = await _reload_registered_agent_runtime(agent_name)
+    return {"ok": True, "agent_name": agent_name, **result, "reload": reload_result}
 
 
 @app.put("/admin/agents/{agent_name}/runtime-config")
@@ -913,7 +1095,8 @@ async def admin_replace_agent_runtime_config(agent_name: str, payload: dict[str,
         result = write_agent_runtime_config(agent_name, payload, merge=False)
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "agent_name": agent_name, **result}
+    reload_result = await _reload_registered_agent_runtime(agent_name)
+    return {"ok": True, "agent_name": agent_name, **result, "reload": reload_result}
 
 
 @app.get("/admin/agents/{agent_name}/card")
@@ -958,10 +1141,22 @@ async def admin_replace_agent_brain_prompt(agent_name: str, payload: AgentBrainP
 
 @app.patch("/admin/agents/{agent_name}/config")
 async def admin_patch_agent_config(agent_name: str, payload: dict[str, Any]) -> dict[str, Any]:
-    config = update_agent_config(agent_name, payload)
+    try:
+        center_payload, runtime_payload = _split_agent_config_payload(agent_name, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    config = update_agent_config(agent_name, center_payload) if center_payload else get_agent_config(agent_name)
+    runtime_result = None
+    reload_result = {"attempted": False, "ok": False, "reason": "no_runtime_config_changes"}
+    if runtime_payload:
+        try:
+            runtime_result = write_agent_runtime_config(agent_name, runtime_payload, merge=True)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        reload_result = await _reload_registered_agent_runtime(agent_name)
     record = _registry.get(agent_name)
-    if record is not None and "scope" in payload:
-        record.scope = payload.get("scope")
+    if record is not None and "scope" in center_payload:
+        record.scope = center_payload.get("scope")
         _append_event(
             record,
             {
@@ -972,16 +1167,42 @@ async def admin_patch_agent_config(agent_name: str, payload: dict[str, Any]) -> 
                 "at": _iso(),
             },
         )
-    return {"ok": True, "agent_name": agent_name, "config": config}
+    return {
+        "ok": True,
+        "agent_name": agent_name,
+        "config": _merged_agent_config(agent_name),
+        "center_config": config,
+        "runtime_config": runtime_result,
+        "reload": reload_result,
+    }
 
 
 @app.put("/admin/agents/{agent_name}/config")
 async def admin_replace_agent_config(agent_name: str, payload: dict[str, Any]) -> dict[str, Any]:
-    config = replace_agent_config(agent_name, payload)
+    try:
+        center_payload, runtime_payload = _split_agent_config_payload(agent_name, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    config = replace_agent_config(agent_name, center_payload)
+    runtime_result = None
+    reload_result = {"attempted": False, "ok": False, "reason": "no_runtime_config_changes"}
+    if runtime_payload:
+        try:
+            runtime_result = write_agent_runtime_config(agent_name, runtime_payload, merge=True)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        reload_result = await _reload_registered_agent_runtime(agent_name)
     record = _registry.get(agent_name)
     if record is not None and "scope" in config:
         record.scope = config.get("scope")
-    return {"ok": True, "agent_name": agent_name, "config": config}
+    return {
+        "ok": True,
+        "agent_name": agent_name,
+        "config": _merged_agent_config(agent_name),
+        "center_config": config,
+        "runtime_config": runtime_result,
+        "reload": reload_result,
+    }
 
 
 @app.get("/admin/agents/{agent_name}/scope")
@@ -1041,7 +1262,16 @@ async def admin_clear_agent_runtime(agent_name: str, payload: AgentRuntimeClearR
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     history = _clear_agent_activity_history(agent_name)
-    return {"ok": True, "agent_name": agent_name, "runtime": result, "history": history}
+    reload_result = {"attempted": False, "ok": False, "reason": "checkpoint_not_cleared"}
+    if payload.include_store or payload.include_checkpoints:
+        reload_result = await _reload_registered_agent_runtime(agent_name)
+    return {
+        "ok": True,
+        "agent_name": agent_name,
+        "runtime": result,
+        "history": history,
+        "reload": reload_result,
+    }
 
 
 @app.post("/admin/agents/{agent_name}/service/start")

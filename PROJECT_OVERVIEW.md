@@ -12,8 +12,8 @@
   收拢成 `Config / SubState / Schema / helper / wrapper / default entry`
   的单文件形态；共享的 demo 级 helper 现在放在 `Agent/server/demo_server.py`。
 
-当前有两套 seed 模板：
-- `SeedAgent`：通用模板，默认不挂文档切分入库和知识管理工具。
+当前有两套知识型 seed 模板：
+- `SeedAgent`：已由 `KnowledgeSeedAgent` 模板重建，默认挂文档切分入库和知识管理工具。
 - `KnowledgeSeedAgent`：知识库模板，接入复制到本项目的 `memory/` 包；
   `ingest_knowledge_document` 负责把 `workspace/knowledge` 中的长文档切分进入
   记忆图，`manage_knowledge` 负责查询、整理、修正和关联记忆内容。
@@ -88,25 +88,34 @@ LANGVIDEO/
     AgentServer 注册时应把 `service_url` 写入 metadata，便于 MainServer 代理。
   - 前端可通过 `GET/PUT /user/chat/config/{agent_name}` 独立管理默认
     `thread_id`、`run_id`、`stream_mode` 和 `version`；请求级参数会覆盖默认配置。
+  - 前端或管理接口写入 Agent runtime config 后，MainServer 会在 AgentServer 在线时
+    调用 `/reload-config`，让内存中的主 agent 重新读取配置。
+  - 主 agent 对话 checkpoint 默认落在
+    `Agent/store/checkpoints/langgraph.sqlite3`；runtime config 的 `checkpointPath`
+    可覆盖该位置。清 checkpoint 后 MainServer 会请求 AgentServer 重载，避免
+    sqlite 连接继续握着已删除的旧文件句柄。
+  - `/admin/agents/{agent_name}/config` 是合并配置视图：中心字段仍存在
+    `MainServer/config/agents.local.json`，模型/API/Neo4j/middleware/tool 字段会写回
+    Agent runtime config。
   - agent 发现和通讯关系由 MainServer 的全局 `communication.spaces` 管理；默认本地配置是
     `MainServer/config/agents.local.json`，示例为 `MainServer/config/agents.example.json`。
   - 每个 space 是一组可互相通讯的 agent；多个 space 可以重叠，通讯边由“是否至少
     共享一个 space”推导。没有配置任何 space 时，兼容为已注册 agent 全可达。
   - 后端管理接口支持读取/修改中心配置、读取/修改单个 agent scope、读取/修改
     给其他 agent 看的 `AgentServer/AgentCard.json`，以及真正进入当前 agent 上下文的
-    `workspace/brain/AGENTS.md`，并从 `SeedAgent` 或 `KnowledgeSeedAgent`
-    模板复制创建新 agent 目录。
+    `workspace/brain/AGENTS.md`，并从任意已有 Agent 目录复制创建新 agent 目录；
+    `SeedAgent` 与 `KnowledgeSeedAgent` 当前都是知识型模板。
   - 复制新 agent 时不复制 `Agent/store`、mail、pycache 等运行态内容；也可通过
     `POST /admin/agents/{agent_name}/runtime/clear` 手动清理本地缓存和临时数据库。
 - `frontend/`
   - React + Vite 管理台，默认通过 `/api` proxy 连接本地 MainServer。
-  - 支持新建/删除 Agent、用图编辑全局通讯空间、持久化 agent 卡片位置、查看邮件和
+  - 支持复制任意已有 Agent 来新建 Agent、删除 Agent、用图编辑全局通讯空间、持久化 agent 卡片位置、查看邮件和
     运行状态、改 Agent runtime 配置、改公开 `AgentCard.json`、改顶层入口
     `brain/AGENTS.md`、配置独立 `thread_id/run_id`、并进入 Agent 对话。
   - Agent 图中同一空间内的成员自动连线；框选图上的多个 Agent 会加入当前空间。
   - 对话内容缓存在 MainServer `ui.chat_sessions`，切换页面或重新点开 agent 后不会丢失。
-  - 对话页在同一界面展示 agent 行为流，但只渲染消息和工具调用卡片，不裸露完整
-    status/update payload。
+  - 对话页把聊天和细节分成两列：聊天列只显示用户和 agent 回复，细节列显示工具调用、
+    邮件和 Agent 行为卡片，不裸露完整 status/update payload。
   - “清缓存”按钮只清 agent checkpoint 数据，并清空该 agent 的前端历史对话缓存；
     不删除 mail、knowledge 或 memory cache。
   - UI 中的 `thread_id/run_id` 只控制对话 invocation；Agent 记忆图身份仍由
@@ -116,7 +125,7 @@ LANGVIDEO/
   - 只是 discovery stub，真正的浏览器流程由 `agent-browser skills get core` 提供。
 - `memory/`
   - 复制进当前项目的记忆管理包。
-  - 当前通过 KnowledgeSeedAgent 的 bridge 使用公开入口 `ChunkApplyTool` 和
+  - 当前通过知识型 seed agents 的 bridge 使用公开入口 `ChunkApplyTool` 和
     `KnowledgeManagerCapabilityMiddleware`。
 
 ## Tool / Middleware 约束

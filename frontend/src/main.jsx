@@ -4,6 +4,7 @@ import {
   Activity,
   Bot,
   CheckCircle2,
+  Copy,
   Database,
   MessageSquare,
   Network,
@@ -407,8 +408,7 @@ function App() {
     Boolean(selectedSummary?.metadata?.service_url) &&
     !["starting", "stopped", "error"].includes(selectedSummary?.status);
   const sourceOptions = useMemo(() => {
-    const names = agents.map((agent) => agent.agent_name);
-    return [...new Set(["SeedAgent", "KnowledgeSeedAgent", ...names])];
+    return [...new Set(agents.map((agent) => agent.agent_name).filter(Boolean))];
   }, [agents]);
   const selectedSpace = spaces.find((space) => space.id === selectedSpaceId) || spaces[0] || null;
   const selectedAgentActivity = useMemo(() => {
@@ -564,6 +564,13 @@ function App() {
     node.scrollTop = node.scrollHeight;
   }, [activeTab, chatMessages, selectedAgentActivity]);
 
+  useEffect(() => {
+    if (!sourceOptions.length) return;
+    if (!sourceOptions.includes(sourceAgent)) {
+      setSourceAgent(sourceOptions.includes(selectedAgent) ? selectedAgent : sourceOptions[0]);
+    }
+  }, [sourceAgent, sourceOptions, selectedAgent]);
+
   function selectAgent(agentName, tab = "chat") {
     setSelectedAgent(agentName);
     setActiveTab(tab);
@@ -578,13 +585,14 @@ function App() {
   function createAgent(event) {
     event.preventDefault();
     const name = newAgentName.trim();
-    if (!name) return;
+    const source = sourceAgent || sourceOptions[0] || "";
+    if (!name || !source) return;
     run(`Creating ${name}`, async () => {
       await api("/admin/agents/create", {
         method: "POST",
         body: JSON.stringify({
           agent_name: name,
-          source_agent: sourceAgent || "SeedAgent",
+          source_agent: source,
           overwrite: false,
         }),
       });
@@ -646,7 +654,7 @@ function App() {
   function clearRuntime() {
     if (!selectedAgent) return;
     run("Clearing checkpoints", async () => {
-      await api(`/admin/agents/${selectedAgent}/runtime/clear`, {
+      const result = await api(`/admin/agents/${selectedAgent}/runtime/clear`, {
         method: "POST",
         body: JSON.stringify({
           include_store: false,
@@ -655,6 +663,9 @@ function App() {
           include_checkpoints: true,
         }),
       });
+      if (result.reload?.attempted && !result.reload.ok) {
+        throw new Error(`checkpoint 已清理，但 AgentServer 重载失败：${result.reload.detail || result.reload.reason || "unknown error"}`);
+      }
       const nextSessions = { ...chatSessions };
       delete nextSessions[selectedAgent];
       setChatSessions(nextSessions);
@@ -814,11 +825,14 @@ function App() {
 
   function saveMainConfig() {
     if (!selectedAgent) return;
-    run("Saving MainServer config", async () => {
-      await api(`/admin/agents/${selectedAgent}/config`, {
+    run("Saving agent config", async () => {
+      const result = await api(`/admin/agents/${selectedAgent}/config`, {
         method: "PUT",
-        body: JSON.stringify(parseJson(mainConfigJson, "MainServer config")),
+        body: JSON.stringify(parseJson(mainConfigJson, "agent config")),
       });
+      if (result.reload?.attempted && !result.reload.ok) {
+        throw new Error(`配置已保存，但 AgentServer 重载失败：${result.reload.detail || result.reload.reason || "unknown error"}`);
+      }
       await loadAgent(selectedAgent);
     });
   }
@@ -826,10 +840,16 @@ function App() {
   function saveRuntimeConfig() {
     if (!selectedAgent) return;
     run("Saving runtime config", async () => {
-      await api(`/admin/agents/${selectedAgent}/runtime-config`, {
+      const result = await api(`/admin/agents/${selectedAgent}/runtime-config`, {
         method: "PUT",
         body: JSON.stringify(parseJson(runtimeConfigJson, "runtime config")),
       });
+      if (result.reload?.attempted && !result.reload.ok) {
+        throw new Error(`配置已保存，但 AgentServer 重载失败：${result.reload.detail || result.reload.reason || "unknown error"}`);
+      }
+      if (selectedServiceReady && !result.reload?.ok) {
+        throw new Error(`配置已保存，但没有重载运行中的 AgentServer：${result.reload?.reason || "unknown reason"}`);
+      }
       await loadAgent(selectedAgent);
     });
   }
@@ -1005,19 +1025,29 @@ function App() {
         </div>
 
         <form className="create-agent" onSubmit={createAgent}>
-          <label>新建 Agent</label>
+          <label>复制 Agent</label>
           <input value={newAgentName} onChange={(event) => setNewAgentName(event.target.value)} placeholder="NewAgent" />
+          <label>来源 Agent</label>
           <div className="inline-row">
-            <select value={sourceAgent} onChange={(event) => setSourceAgent(event.target.value)}>
+            <select value={sourceAgent} onChange={(event) => setSourceAgent(event.target.value)} disabled={!sourceOptions.length}>
               {sourceOptions.map((name) => (
                 <option key={name} value={name}>
                   {name}
                 </option>
               ))}
             </select>
-            <button type="submit">
+            <button
+              type="button"
+              className="icon-button secondary"
+              title="使用当前选中的 Agent 作为复制来源"
+              onClick={() => setSourceAgent(selectedAgent)}
+              disabled={!selectedAgent || !sourceOptions.includes(selectedAgent)}
+            >
+              <Copy size={16} />
+            </button>
+            <button type="submit" disabled={!sourceOptions.length}>
               <Plus size={16} />
-              新建
+              复制
             </button>
           </div>
         </form>
@@ -1192,75 +1222,77 @@ function App() {
 
         {activeTab === "chat" && (
           <section className="chat-view">
-            <div className="conversation">
-              <div className="messages" ref={messagesRef}>
-                {chatMessages.map((message, index) => {
-                  const roleClass = String(message.role || "").replace(/\s+/g, "-");
-                  const visibleEvents = (message.events || []).filter(isVisibleTraceEvent);
-                  return (
-                    <div key={message.id || `${message.role}-${index}`} className={`bubble ${roleClass}`}>
-                      <div>{message.content}</div>
-                      {visibleEvents.length > 0 && (
-                        <div className="bubble-trace">
-                          {visibleEvents.slice(0, 8).map((eventItem) => (
-                            <p key={eventItem.id || `${eventItem.title}-${eventItem.detail}`}>
-                              <strong>{eventItem.title}</strong>
-                              {eventItem.detail ? <span>{eventItem.detail}</span> : null}
-                            </p>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {selectedAgentActivity.length > 0 && (
-                  <div className="activity-stream">
-                    <div className="activity-heading">Agent 行为流</div>
-                    {selectedAgentActivity.map((message) => (
-                      message.role === "agent" ? (
-                        <div key={message.id} className="bubble agent">
-                          {message.content}
-                        </div>
-                      ) : (
-                        <div key={message.id} className={`bubble behavior ${message.kind || "tool"}`}>
-                          <div className="behavior-title">
-                            <span>{message.kind === "tool" ? "工具" : "消息"}</span>
-                            <strong>{message.content}</strong>
-                          </div>
-                          {Array.isArray(message.events) && message.events.length > 0 && (
-                            <div className="bubble-trace">
-                              {message.events.map((eventItem) => (
-                                <p key={eventItem.id || `${eventItem.title}-${eventItem.detail}`}>
-                                  <strong>{eventItem.title}</strong>
-                                  {eventItem.detail ? <span>{eventItem.detail}</span> : null}
-                                </p>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    ))}
-                  </div>
-                )}
-              </div>
-              <form className="composer" onSubmit={sendChat}>
-                <textarea value={chatText} onChange={(event) => setChatText(event.target.value)} placeholder="输入消息" />
-                <input
-                  value={attachmentUrl}
-                  onChange={(event) => setAttachmentUrl(event.target.value)}
-                  placeholder="图片 URL、data URL 或文件链接"
-                />
-                <div className="composer-actions">
-                  <select value={sendMode} onChange={(event) => setSendMode(event.target.value)}>
-                    <option value="direct">正常发送</option>
-                    <option value="mail">发邮件</option>
-                  </select>
-                  <button type="submit">
-                    <Send size={16} />
-                    发送
-                  </button>
+            <div className="chat-columns">
+              <div className="conversation chat-lane">
+                <div className="lane-heading">对话</div>
+                <div className="messages" ref={messagesRef}>
+                  {chatMessages.map((message, index) => {
+                    const roleClass = String(message.role || "").replace(/\s+/g, "-");
+                    return (
+                      <div key={message.id || `${message.role}-${index}`} className={`bubble ${roleClass}`}>
+                        <div>{message.content}</div>
+                      </div>
+                    );
+                  })}
                 </div>
-              </form>
+                <form className="composer" onSubmit={sendChat}>
+                  <textarea value={chatText} onChange={(event) => setChatText(event.target.value)} placeholder="输入消息" />
+                  <input
+                    value={attachmentUrl}
+                    onChange={(event) => setAttachmentUrl(event.target.value)}
+                    placeholder="图片 URL、data URL 或文件链接"
+                  />
+                  <div className="composer-actions">
+                    <select value={sendMode} onChange={(event) => setSendMode(event.target.value)}>
+                      <option value="direct">正常发送</option>
+                      <option value="mail">发邮件</option>
+                    </select>
+                    <button type="submit">
+                      <Send size={16} />
+                      发送
+                    </button>
+                  </div>
+                </form>
+              </div>
+              <aside className="detail-lane">
+                <div className="lane-heading">细节</div>
+                {selectedAgentActivity.length > 0 ? (
+                  selectedAgentActivity.map((message) => (
+                    message.role === "agent" ? (
+                      <div key={message.id} className="detail-card message">
+                        <strong>Agent 回复</strong>
+                        <p>{message.content}</p>
+                      </div>
+                    ) : (
+                      <div key={message.id} className={`detail-card ${message.kind || "tool"}`}>
+                        <div className="behavior-title">
+                          <span>{message.kind === "tool" ? "工具" : "消息"}</span>
+                          <strong>{message.content}</strong>
+                        </div>
+                        {Array.isArray(message.events) && message.events.length > 0 && (
+                          <div className="bubble-trace">
+                            {message.events.map((eventItem) => (
+                              <p key={eventItem.id || `${eventItem.title}-${eventItem.detail}`}>
+                                <strong>{eventItem.title}</strong>
+                                {eventItem.detail ? <span>{eventItem.detail}</span> : null}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  ))
+                ) : lastTraceEvents.filter(isVisibleTraceEvent).length ? (
+                  lastTraceEvents.filter(isVisibleTraceEvent).map((eventItem) => (
+                    <div key={eventItem.id || `${eventItem.title}-${eventItem.detail}`} className={`detail-card ${eventItem.type}`}>
+                      <strong>{eventItem.title}</strong>
+                      {eventItem.detail ? <p>{eventItem.detail}</p> : null}
+                    </div>
+                  ))
+                ) : (
+                  <p className="note">工具调用、邮件收发和 Agent 行为会显示在这里。</p>
+                )}
+              </aside>
             </div>
             <aside className="runtime-panel">
               <h3>对话配置</h3>
@@ -1286,26 +1318,6 @@ function App() {
                     <strong>{agent.agent_name}</strong> {agent.status} {agent.phase || ""}
                   </p>
                 ))}
-              </div>
-              <div className="trace-panel">
-                <h4>Agent 行为</h4>
-                {selectedAgentActivity.length ? (
-                  selectedAgentActivity.slice(-12).map((eventItem) => (
-                    <div key={eventItem.id} className={`trace-row behavior ${eventItem.kind || "message"}`}>
-                      <strong>{eventItem.kind === "tool" ? "工具" : "消息"} · {eventItem.role === "agent" ? "Agent 回复" : eventItem.content}</strong>
-                      <p>{eventItem.role === "agent" ? eventItem.content : eventItem.events?.[0]?.detail || ""}</p>
-                    </div>
-                  ))
-                ) : lastTraceEvents.filter(isVisibleTraceEvent).length ? (
-                  lastTraceEvents.filter(isVisibleTraceEvent).map((eventItem) => (
-                    <div key={eventItem.id || `${eventItem.title}-${eventItem.detail}`} className={`trace-row ${eventItem.type}`}>
-                      <strong>{eventItem.title}</strong>
-                      {eventItem.detail ? <p>{eventItem.detail}</p> : null}
-                    </div>
-                  ))
-                ) : (
-                  <p className="note">该 agent 的消息和工具调用会显示在这里。</p>
-                )}
               </div>
             </aside>
           </section>
@@ -1363,11 +1375,11 @@ function App() {
         {activeTab === "config" && (
           <section className="split-view">
             <div>
-              <label>MainServer Config</label>
+              <label>Agent Config</label>
               <textarea className="code" value={mainConfigJson} onChange={(event) => setMainConfigJson(event.target.value)} />
               <button onClick={saveMainConfig}>
                 <Database size={16} />
-                保存中心配置
+                保存合并配置
               </button>
             </div>
             <div>

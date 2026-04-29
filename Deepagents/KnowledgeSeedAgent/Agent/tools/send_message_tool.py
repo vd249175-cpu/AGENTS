@@ -12,10 +12,7 @@ from pydantic import BaseModel, Field
 from MainServer.comm import AgentComm
 from MainServer.state import MessageType
 from ..server.demo_server import StrictConfig, config_from_external, emit, get_nested_count, update_nested_count
-from ..server.path_resolver import WORKSPACE_ROOT
-
-
-NETWORK_SCHEMES = ("http://", "https://", "ftp://", "s3://", "file://")
+from ..server.path_resolver import WORKSPACE_ROOT, is_network_link, workspace_visible_path
 
 
 class Config(StrictConfig):
@@ -106,17 +103,18 @@ tool_runingconfig = Config.load_config_send_message_tool(Path(__file__).with_nam
 
 
 def _is_network_url(link: str) -> bool:
-    return link.startswith(NETWORK_SCHEMES)
+    return is_network_link(link)
 
 
 def _workspace_link_to_host_path(link: str) -> str:
     if _is_network_url(link):
         return link
-    raw_path = PurePosixPath(link)
+    visible_link = workspace_visible_path(link)
+    raw_path = PurePosixPath(visible_link)
     try:
         relative = raw_path.relative_to("/workspace")
     except ValueError as exc:
-        raise ValueError("attachment links must start with /workspace unless they are network URLs.") from exc
+        raise ValueError("attachment links must resolve to /workspace unless they are network URLs.") from exc
     if any(part == ".." for part in relative.parts):
         raise ValueError("attachment link must not escape /workspace.")
     host_path = (WORKSPACE_ROOT / Path(*relative.parts)).resolve()
@@ -145,6 +143,25 @@ def _normalize_attachments(raw_attachments: list[Any] | None) -> list[dict[str, 
     return normalized
 
 
+def _normalize_visible_links(raw_links: list[Any] | None) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for raw in raw_links or []:
+        if isinstance(raw, BaseModel):
+            item = raw.model_dump()
+        else:
+            item = dict(raw)
+        link = str(item.get("link") or "").strip()
+        if not link:
+            raise ValueError("deliverable link must not be empty.")
+        normalized.append(
+            {
+                "link": workspace_visible_path(link),
+                "summary": str(item.get("summary") or "").strip(),
+            }
+        )
+    return normalized
+
+
 def _task_payload(
     *,
     task_info: Any,
@@ -154,7 +171,7 @@ def _task_payload(
     if task_info is not None:
         payload = task_info.model_dump() if isinstance(task_info, BaseModel) else dict(task_info)
         payload["owner"] = str(payload.get("owner") or owner)
-        payload["deliverables"] = _normalize_attachments(payload.get("deliverables") or [])
+        payload["deliverables"] = _normalize_visible_links(payload.get("deliverables") or [])
         return payload
     body = str(content or "").strip()
     if not body:

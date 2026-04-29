@@ -2,20 +2,12 @@
   "agent_name": "KnowledgeSeedAgent",
   "capabilities": [
     {
-      "title": "Knowledge Ingest",
-      "content": "Split long documents from workspace/knowledge into memory graph storage with ingest_knowledge_document."
+      "content": "Split long documents from workspace/knowledge into memory graph storage with ingest_knowledge_document.",
+      "title": "Knowledge Ingest"
     },
     {
-      "title": "Memory Management",
-      "content": "Manage, query, organize, update, and link memory graph content through manage_knowledge."
-    },
-    {
-      "title": "Messaging",
-      "content": "Send and receive AgentMail through MainServer using ReceiveMessagesMiddleware and SendMessagesMiddleware."
-    },
-    {
-      "title": "Trace",
-      "content": "Uses AgentStepTraceMiddleware and optional DebugTraceMiddleware."
+      "content": "Manage, query, organize, update, and link memory graph content through manage_knowledge.",
+      "title": "Memory Management"
     }
   ]
 }

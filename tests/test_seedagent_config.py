@@ -7,18 +7,20 @@ from Deepagents.SeedAgent.Agent.server.memory_bridge import build_knowledge_mana
 from Deepagents.SeedAgent.AgentServer.service import load_service_config
 from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import Config as KnowledgeSeedConfig
 from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import EXAMPLE_CONFIG_PATH as KNOWLEDGE_EXAMPLE_CONFIG_PATH
+from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import build_middlewares as build_knowledge_middlewares
+from Deepagents.KnowledgeSeedAgent.Agent.MainAgent import render_system_prompt as render_knowledge_system_prompt
 
 
 class SeedAgentConfigTests(unittest.TestCase):
-    def test_seed_example_config_loads_as_general_runtime_config(self) -> None:
+    def test_seed_example_config_loads_as_knowledge_runtime_config(self) -> None:
         config = Config.load_config_seed_agent(EXAMPLE_CONFIG_PATH)
 
-        self.assertEqual(config.agentName, "SeedAgent")
-        self.assertEqual(config.agentRole, "general seed agent")
+        self.assertNotIn("agentName", Config.model_fields)
         self.assertEqual(config.chatModelProvider, "openai")
         self.assertEqual(config.neo4jUri, "neo4j://localhost:7687")
-        self.assertFalse(config.enableKnowledgeManagerMiddleware)
-        self.assertFalse(config.enableKnowledgeIngestMiddleware)
+        self.assertTrue(config.enableKnowledgeManagerMiddleware)
+        self.assertTrue(config.enableKnowledgeIngestMiddleware)
+        self.assertIsNone(config.checkpointPath)
         self.assertEqual(config.chunkHistoryLineCount, 4)
         self.assertEqual(config.graphQueryKeywordTopK, 6)
         self.assertIsNone(render_system_prompt(config))
@@ -26,13 +28,34 @@ class SeedAgentConfigTests(unittest.TestCase):
     def test_knowledge_seed_keeps_memory_tools_enabled(self) -> None:
         config = KnowledgeSeedConfig.load_config_knowledge_seed_agent(KNOWLEDGE_EXAMPLE_CONFIG_PATH)
 
-        self.assertEqual(config.agentName, "KnowledgeSeedAgent")
+        self.assertNotIn("agentName", KnowledgeSeedConfig.model_fields)
         self.assertTrue(config.enableKnowledgeManagerMiddleware)
         self.assertTrue(config.enableKnowledgeIngestMiddleware)
-        self.assertIn("manage_knowledge", config.agentResponsibilities[3])
+        self.assertIsNone(config.checkpointPath)
+        self.assertIsNone(render_knowledge_system_prompt(config))
+
+    def test_knowledge_seed_top_prompt_only_uses_agents_md_memory_source(self) -> None:
+        config = KnowledgeSeedConfig.load_config_knowledge_seed_agent(KNOWLEDGE_EXAMPLE_CONFIG_PATH).model_copy(
+            update={
+                "enableSkillsMiddleware": False,
+                "enableKnowledgeManagerMiddleware": False,
+                "enableKnowledgeIngestMiddleware": False,
+                "enableReceiveMessagesMiddleware": False,
+                "enableSendMessagesMiddleware": False,
+                "enableAgentStepTraceMiddleware": False,
+                "enableDebugTraceMiddleware": False,
+            }
+        )
+
+        middlewares = build_knowledge_middlewares(config=config, comm=None)
+
+        self.assertEqual([middleware.name for middleware in middlewares], ["MemoryMiddleware"])
+        self.assertEqual(getattr(middlewares[0], "sources", None), ["/brain/AGENTS.md"])
 
     def test_ingest_tool_is_owned_by_middleware(self) -> None:
-        middleware = KnowledgeIngestMiddleware(runingConfig=KnowledgeIngestMiddleware.config(agentName="SeedAgent"))
+        middleware = KnowledgeIngestMiddleware(
+            runingConfig=KnowledgeIngestMiddleware.config(runtimeAgentName="SeedAgent")
+        )
 
         self.assertEqual(middleware.middleware.name, "knowledge_ingest")
         self.assertEqual([tool.name for tool in middleware.middleware.tools], ["ingest_knowledge_document"])
@@ -60,7 +83,7 @@ class SeedAgentConfigTests(unittest.TestCase):
 
         self.assertEqual(service_config.agent_name, "SeedAgent")
         self.assertEqual(service_config.host, "127.0.0.1")
-        self.assertEqual(service_config.port, 8010)
+        self.assertEqual(service_config.port, 8011)
 
     def test_chunk_apply_config_maps_readme_public_fields(self) -> None:
         config = Config.load_config_seed_agent(EXAMPLE_CONFIG_PATH).model_copy(

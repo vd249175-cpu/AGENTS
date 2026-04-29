@@ -1,7 +1,6 @@
 import asyncio
 import os
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +35,7 @@ from .sandbox import get_seed_agent_sandbox
 AGENT_ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = AGENT_ROOT / "SeedAgentConfig.local.json"
 EXAMPLE_CONFIG_PATH = AGENT_ROOT / "SeedAgentConfig.example.json"
+AGENT_NAME = "SeedAgent"
 
 
 def default_config_path() -> Path:
@@ -46,23 +46,7 @@ def default_config_path() -> Path:
         return DEFAULT_CONFIG_PATH
     return EXAMPLE_CONFIG_PATH
 
-
 class Config(StrictConfig):
-    agentName: str = Field(default="SeedAgent")
-    agentRole: str = Field(default="general seed agent")
-    agentDescription: str = Field(
-        default="一个通用 Agent 模板，负责对话、工具调用、Agent 通讯和可复制的基础运行骨架。"
-    )
-    agentResponsibilities: list[str] = Field(
-        default_factory=lambda: [
-            "组织当前会话的任务步骤",
-            "通过 MainServer 与其他 Agent 通讯",
-            "根据用户目标选择合适的 middleware 工具",
-            "在需要外部协作时发送或读取 AgentMail",
-            "以流式事件汇报关键执行过程",
-            "使用 middleware 自动挂载的工具，不在 agent 装配层重复挂 tools",
-        ]
-    )
     systemPromptExtra: str = Field(default="")
 
     chatModelProvider: str = Field(default="openai")
@@ -82,11 +66,10 @@ class Config(StrictConfig):
     neo4jUsername: str = Field(default="neo4j")
     neo4jPassword: str = Field(default="")
     neo4jDatabase: str | None = Field(default=None)
-
     enableMemoryMiddleware: bool = Field(default=True)
     enableSkillsMiddleware: bool = Field(default=True)
-    enableKnowledgeManagerMiddleware: bool = Field(default=False)
-    enableKnowledgeIngestMiddleware: bool = Field(default=False)
+    enableKnowledgeManagerMiddleware: bool = Field(default=True)
+    enableKnowledgeIngestMiddleware: bool = Field(default=True)
     enableReceiveMessagesMiddleware: bool = Field(default=True)
     enableSendMessagesMiddleware: bool = Field(default=True)
     enableAgentStepTraceMiddleware: bool = Field(default=True)
@@ -94,6 +77,7 @@ class Config(StrictConfig):
 
     defaultRunId: str = Field(default="seedagent-run")
     defaultThreadId: str = Field(default="default")
+    checkpointPath: str | None = Field(default=None)
 
     defaultDestination: str | None = Field(default=None)
     defaultMessageType: MessageType = Field(default="message")
@@ -159,29 +143,6 @@ class Config(StrictConfig):
         return config_from_external(cls, source or default_config_path())
 
 
-@dataclass(frozen=True, slots=True)
-class AgentSpec:
-    name: str
-    role: str
-    description: str
-    responsibilities: tuple[str, ...]
-
-
-AGENT_SPEC = AgentSpec(
-    name="SeedAgent",
-    role="general seed agent",
-    description="一个通用 Agent 模板，负责对话、工具调用、Agent 通讯和可复制的基础运行骨架。",
-    responsibilities=(
-        "组织当前会话的任务步骤",
-        "通过 MainServer 与其他 Agent 通讯",
-        "根据用户目标选择合适的 middleware 工具",
-        "在需要外部协作时发送或读取 AgentMail",
-        "以流式事件汇报关键执行过程",
-        "使用 middleware 自动挂载的工具，不在 agent 装配层重复挂 tools",
-    ),
-)
-
-
 class SubState(
     AgentState,
     KnowledgeIngestMiddleware.substate,
@@ -200,7 +161,8 @@ class AgentSchema:
 
 
 def runtime_agent_name(config: Config | None = None) -> str:
-    return os.getenv("AGENT_NAME") or (config.agentName if config is not None else AGENT_SPEC.name)
+    del config
+    return os.getenv("AGENT_NAME") or AGENT_NAME
 
 
 class SeedMainAgent:
@@ -312,7 +274,7 @@ def build_middlewares(*, config: Config, comm: AgentComm | None) -> list[Any]:
                     shardCount=config.shardCount,
                     maxWorkers=config.maxWorkers,
                     referenceBytes=config.referenceBytes,
-                    agentName=agent_name,
+                    runtimeAgentName=agent_name,
                 )
             ).middleware
         )
@@ -400,7 +362,7 @@ async def _build_main_agent_async(
     agent_name = runtime_agent_name(current_config)
     backend = get_seed_agent_sandbox(WORKSPACE_ROOT, agent_name=agent_name)
     checkpoint_stack = AsyncExitStack()
-    checkpoint_path = resolve_store_path(None, default_relative="checkpoints/langgraph.sqlite3")
+    checkpoint_path = resolve_store_path(current_config.checkpointPath, default_relative="checkpoints/langgraph.sqlite3")
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     checkpointer = await checkpoint_stack.enter_async_context(
         AsyncSqliteSaver.from_conn_string(str(checkpoint_path))

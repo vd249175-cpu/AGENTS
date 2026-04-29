@@ -31,6 +31,13 @@ RUNTIME_FILE_NAMES = {
     "chunk_staging.sqlite3",
 }
 
+OBSOLETE_RUNTIME_CONFIG_KEYS = {
+    "agentName",
+    "agentRole",
+    "agentDescription",
+    "agentResponsibilities",
+}
+
 
 def validate_agent_name(agent_name: str) -> str:
     name = agent_name.strip()
@@ -104,7 +111,8 @@ def write_agent_runtime_config(
         config = {**current, **value}
     else:
         config = dict(value)
-    config.setdefault("agentName", validate_agent_name(agent_name))
+    for key in OBSOLETE_RUNTIME_CONFIG_KEYS:
+        config.pop(key, None)
     paths["local"].parent.mkdir(parents=True, exist_ok=True)
     paths["local"].write_text(
         json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

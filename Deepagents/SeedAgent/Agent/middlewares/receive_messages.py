@@ -12,6 +12,7 @@ from pydantic import Field
 from MainServer.comm import AgentComm
 from MainServer.state import AgentMail
 from ..server.demo_server import set_named_system_message
+from ..server.path_resolver import workspace_visible_path
 from .base import BaseAgentMiddleware, MiddlewareCapabilityPrompt, MiddlewareRuningConfig
 
 
@@ -20,7 +21,7 @@ MIDDLEWARE_DIR = Path(__file__).resolve().parent
 
 class Config(MiddlewareRuningConfig):
     guidancePrompt: str = Field(
-        default="当收到 `<Inbox>` 用户消息时，先阅读内容，再决定是否回复、委派或继续当前任务。"
+        default="当收到 `<Inbox>` 用户消息时，先阅读内容，再决定是否回复、委派或继续当前任务。如果你需要和其他agent交流，你总是需要调用工具，否则交流不会生效"
     )
     maxInboxItems: int = Field(default=20, ge=1)
     peekPeersInGuidance: bool = Field(default=True)
@@ -55,6 +56,33 @@ middleware_capability_prompts = [
 ]
 
 
+def _visible_value(value: Any, *, key: str | None = None) -> Any:
+    if isinstance(value, str):
+        if key in {"link", "value"}:
+            return workspace_visible_path(value)
+        return value
+    if isinstance(value, list):
+        return [_visible_value(item) for item in value]
+    if isinstance(value, dict):
+        return {item_key: _visible_value(item, key=str(item_key)) for item_key, item in value.items()}
+    return value
+
+
+def _format_attachments(message: AgentMail) -> list[str]:
+    attachments = message.get("attachments") or []
+    if not attachments:
+        return []
+    lines = ["attachments:"]
+    for index, attachment in enumerate(attachments, 1):
+        link = workspace_visible_path(str(attachment.get("link") or attachment.get("value") or ""))
+        summary = str(attachment.get("summary") or "").strip()
+        if summary:
+            lines.append(f"- {index}. {link} ({summary})")
+        else:
+            lines.append(f"- {index}. {link}")
+    return lines
+
+
 def _format_inbox(messages: list[AgentMail]) -> str:
     if not messages:
         return ""
@@ -62,8 +90,9 @@ def _format_inbox(messages: list[AgentMail]) -> str:
     for message in messages:
         source = message.get("from", "unknown")
         message_type = message.get("type", "")
-        content = str(message.get("content", "")).strip()
+        content = str(_visible_value(message.get("content", ""))).strip()
         lines.append(f"[{message_type}] from={source}: {content}")
+        lines.extend(_format_attachments(message))
     lines.append("</Inbox>")
     return "\n".join(lines)
 
@@ -98,7 +127,7 @@ class Middleware(BaseAgentMiddleware):
         messages = set_named_system_message(
             list(guided.messages),
             name="middleware.receive_messages.peers",
-            text=f"当前可达 peers={peers_text}",
+            text=f"当前可达 peers={peers_text}你可以向他们发送邮件，peers中为他们的agent name",
         )
         return guided.override(messages=messages)
 

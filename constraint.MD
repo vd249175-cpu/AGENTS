@@ -10,9 +10,9 @@
 当前不直接迁移旧项目中的 `MemoryManage/*`、RAG、索引构建、记忆召回等历史实现。
 记忆能力通过复制到当前项目的 `memory/` 包接入，优先使用它的 demo 风格公开入口：
 `ChunkApplyTool` 和 `KnowledgeManagerCapabilityMiddleware`。
-当前保留两套 seed：`SeedAgent` 是通用模板，默认不挂知识入库/管理工具；
-`KnowledgeSeedAgent` 是知识库模板，默认挂 `ingest_knowledge_document` 和
-`manage_knowledge`。主 agent 仍可接入 deepagents 自带的 `MemoryMiddleware`
+当前保留两套知识型 seed：`SeedAgent` 已由 `KnowledgeSeedAgent` 模板重建，
+默认挂 `ingest_knowledge_document` 和 `manage_knowledge`；`KnowledgeSeedAgent`
+保留为知识库模板源。主 agent 仍可接入 deepagents 自带的 `MemoryMiddleware`
 与 `SkillsMiddleware`，分别读取 `workspace/brain/AGENTS.md` 和
 `workspace/skills/*/SKILL.md`。
 
@@ -24,8 +24,8 @@
 LANGVIDEO/
 ├── Deepagents/                  # 多 Agent 服务目录
 │   ├── __init__.py
-│   ├── SeedAgent/               # 通用种子 Agent，默认不挂知识工具
-│   └── KnowledgeSeedAgent/      # 知识库种子 Agent，挂文档入库和管理工具
+│   ├── SeedAgent/               # 知识型种子 Agent，挂文档入库和管理工具
+│   └── KnowledgeSeedAgent/      # 知识库模板 Agent，挂文档入库和管理工具
 ├── MainServer/                  # 中心化注册 / 路由 / 调度服务
 │   ├── __init__.py
 │   ├── main_server.py           # FastAPI 应用：注册、状态、事件、消息路由
@@ -120,7 +120,7 @@ MainServer/
 | `comm.py` | `AgentComm` 类，提供 `send / recv / peers` | 纯 SDK，不持有状态，不引入 `requests` / `httpx` |
 | `mail_router.py` | 路由本地附件到接收方 workspace | 不下载网络资源，不执行 Agent 任务 |
 | `admin_config.py` | 读取和写入 MainServer 本地 agent/discovery 配置 | 不导入 Agent 运行时，不保存模型凭据 |
-| `agent_templates.py` | 从 `SeedAgent` 或 `KnowledgeSeedAgent` 模板复制创建新 Agent 目录 | 不启动模型，不改已有 Agent，除非显式 overwrite |
+| `agent_templates.py` | 从任意已有 Agent 目录复制创建新 Agent 目录 | 不启动模型，不改已有 Agent，除非显式 overwrite |
 | `main_server.py` | FastAPI 应用，注册、状态更新、事件收集、消息路由 | 不持有 Agent 运行时，不做任务执行 |
 
 ---
@@ -172,6 +172,7 @@ CollaborationState       # {"agentcard", "agent_messages"}
 | `GET/PUT /user/chat/config/{agent_name}` | 用户会话配置 | 前端读写默认 `thread_id`、`run_id`、`stream_mode`、`version` |
 | `GET/PUT /admin/agents/{agent_name}/card` | Agent 公开卡片 | 读写 `AgentServer/AgentCard.json`，用于向其他 agent 展示能力 |
 | `GET/PUT /admin/agents/{agent_name}/brain` | Agent 顶层提示词 | 读写 `workspace/brain/AGENTS.md`，这是当前 agent 真正进入上下文的行为入口 |
+| `POST /reload-config` | AgentServer 内部重载 | 运行中的 AgentServer 重新读取 runtime config 并重建主 agent |
 
 ### 5.2 SDK 约束
 
@@ -195,10 +196,14 @@ CollaborationState       # {"agentcard", "agent_messages"}
 - 对话入口的 `run_id` 只用于本次 agent invocation / stream 追踪；不要用它自动覆盖
   Agent runtime config 中的 `knowledgeRunId`。知识图身份由 `knowledgeRunId` 管理，
   新开 `thread_id` 应清空对话 checkpoint 上下文，但仍可访问同一 agent 的知识库。
+- 主 agent 的会话记忆由 LangGraph sqlite checkpointer 保存，默认路径是
+  `Agent/store/checkpoints/langgraph.sqlite3`，可通过 runtime config 的
+  `checkpointPath` 覆盖。清理 checkpoint 后必须重载运行中的 AgentServer，
+  让主 agent 关闭旧 sqlite 连接并重新接到新文件。
 - 浏览器自动化是 agent 侧能力，不是 Codex 自身能力；它通过 `workspace/skills/agent-browser/SKILL.md` 接入，Docker sandbox 提供 `agent-browser` + `/usr/bin/chromium`，真实流程由 CLI 的 `skills get core` 提供。
-- KnowledgeSeedAgent 记忆能力通过 `memory/` 包接入：`ingest_knowledge_document`
+- SeedAgent 与 KnowledgeSeedAgent 记忆能力通过 `memory/` 包接入：`ingest_knowledge_document`
   将 `/workspace/knowledge/...` 文件切分写入记忆图，`manage_knowledge` 管理、
-  查询、修正和关联记忆内容。通用 `SeedAgent` 默认不启用这两个能力。
+  查询、修正和关联记忆内容。
 
 ### 5.3 注册链路
 
@@ -260,12 +265,13 @@ MainServer 后端管理接口：
 | `/admin/communication` | `GET/PUT` | 读取或替换全局通讯空间，并返回由 spaces 推导出的通讯边 |
 | `/admin/ui-state` | `GET/PUT` | 读取或替换前端图节点位置和聊天会话缓存 |
 | `/admin/monitor` | `GET` | 返回当前 agent 状态、mailbox 计数和最近邮件记录 |
-| `/admin/agents/create` | `POST` | 从 `SeedAgent`、`KnowledgeSeedAgent` 或指定模板复制创建新 Agent 目录，并写入中心配置 |
+| `/admin/agents/create` | `POST` | 从任意已有 Agent 目录复制创建新 Agent 目录，并写入中心配置 |
 | `/admin/agents/{agent_name}/config` | `GET/PATCH/PUT` | 读取、合并或替换单个 Agent 的配置 |
 | `/admin/agents/{agent_name}/card` | `GET/PUT` | 读取或替换 `AgentServer/AgentCard.json` 公开能力卡片 |
 | `/admin/agents/{agent_name}/brain` | `GET/PUT` | 读取或替换 `workspace/brain/AGENTS.md` 常驻 brain 提示词 |
 | `/admin/agents/{agent_name}/scope` | `GET/PUT` | legacy 兼容接口；新通讯图不依赖它 |
 | `/admin/agents/{agent_name}/runtime/clear` | `POST` | 按参数清理本地运行态目录；前端“清缓存”按钮只清 checkpoint 数据 |
+| `/admin/agents/{agent_name}/runtime-config` | `GET/PATCH/PUT` | 读取或写入 Agent runtime 配置；写入后会尝试调用在线 AgentServer 的 `/reload-config` |
 
 前端“清缓存”按钮的固定语义：
 - 后端只清 `Agent/store/checkpoints` 和 `Agent/store/memory/checkpoint`。
@@ -360,7 +366,7 @@ ReceiveMessagesMiddleware
 Agent runtime 完整配置放在 `Deepagents/*/Agent/<XxxAgent>Config.local.json`，
 示例为 `<XxxAgent>Config.example.json`。该配置包含：
 
-- agent name、模型、middleware 和工具运行参数。agent 身份、角色和顶层行为提示词
+- 模型、middleware 和工具运行参数。agent 身份、公开能力、角色和顶层行为提示词
   统一写入 `workspace/brain/AGENTS.md`，不再由 runtime config 拼接生成顶层
   `system_prompt`。
 - chat model、embedding model、API key、base URL。
@@ -375,6 +381,13 @@ Agent runtime 完整配置放在 `Deepagents/*/Agent/<XxxAgent>Config.local.json
 
 `<XxxAgent>Config.local.json` 包含本地凭据，默认不提交。`AgentServer/ServiceConfig.json`
 只保存独立服务配置，例如 `agent_name`、`host`、`port`、`main_server_url`。
+`GET/PUT/PATCH /admin/agents/{agent_name}/config` 是前端使用的合并配置视图：
+返回 MainServer 中心配置和 Agent runtime 配置的合并结果。保存时，`template`、
+`scope`、`chat`、`enabled` 等中心字段写入 `MainServer/config/agents.local.json`；
+模型、API key、Neo4j、middleware 和 tool 参数写入对应
+`<XxxAgent>Config.local.json`。MainServer 写入 runtime config 后，如果该 agent
+已注册且 metadata 中有 `service_url`，必须请求对应 AgentServer 的
+`/reload-config`，让运行中的主 agent 在下一次 invocation 使用新参数。
 
 旧模型配置放在 `Deepagents/*/Agent/Models/`，只作为兼容配置保留。
 
