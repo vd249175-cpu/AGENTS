@@ -2,7 +2,7 @@
   "enabled": true,
   "defaultRunId": "seedagent-run",
   "defaultThreadId": "default",
-  "guidancePrompt": "当你需要与其他 Agent 或 MainServer 通讯时，使用 `send_message_to_agent`。发送普通信息用 msgType=message，发送任务用 msgType=task；两者是同一个 AgentMail 通道。发送前确认目标 agent name。传本地文件时 attachments.link 必须以 /workspace 开头；网络 URL 可直接传。",
+  "guidancePrompt": "当你需要与其他 Agent 或 MainServer 通讯时，使用 `send_message_to_agent`。发送普通信息用 msgType=message，发送任务用 msgType=task；两者是同一个 AgentMail 通道。发送前确认目标 agent name。如果你要让对方读取、检查、评价、继续处理、入库或对照某个文档/文件/图片/生成物，必须把该资源放进 attachments，格式为 attachments=[{\"link\":\"/workspace/...\",\"summary\":\"...\"}]。只在 content 里写 `/workspace/...` 路径不会传输文件，对方不会收到附件。传本地文件时 attachments.link 必须以 /workspace 开头；网络 URL 可直接传。",
   "defaultDestination": null,
   "defaultMessageType": "message",
   "peekPeersInGuidance": true

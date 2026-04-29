@@ -29,7 +29,11 @@ class Config(MiddlewareRuningConfig):
         default=(
             "当你需要与其他 Agent 或 MainServer 通讯时，使用 `send_message_to_agent`。"
             "发送普通信息用 msgType=message，发送任务用 msgType=task；两者是同一个 AgentMail 通道。"
-            "发送前确认目标 agent name。传本地文件时 attachments.link 必须以 /workspace 开头；网络 URL 可直接传。"
+            "发送前确认目标 agent name。"
+            "如果你要让对方读取、检查、评价、继续处理、入库或对照某个文档/文件/图片/生成物，"
+            "必须把该资源放进 attachments，格式为 attachments=[{\"link\":\"/workspace/...\",\"summary\":\"...\"}]。"
+            "只在 content 里写 `/workspace/...` 路径不会传输文件，对方不会收到附件。"
+            "传本地文件时 attachments.link 必须以 /workspace 开头；网络 URL 可直接传。"
         )
     )
     defaultDestination: str | None = Field(default=None)
@@ -71,6 +75,49 @@ def _current_agent_name(comm: AgentComm | None) -> str | None:
     if comm is None:
         return None
     return str(comm.agent_name or "").strip() or None
+
+
+def _format_peer_directory(peers: list[str], peer_details: list[dict[str, Any]] | None = None) -> str:
+    details = [item for item in peer_details or [] if isinstance(item, dict)]
+    if not details:
+        peers_text = ", ".join(peers) if peers else "无"
+        return (
+            f"MainServer 当前在线且可通讯的其他 agent：{peers_text}。"
+            "如果需要联系它们，必须调用 send_message_to_agent，并把 dst 设置为对应 agent name；"
+            "只在对话里提到它们不会产生通讯。"
+        )
+
+    lines = ["MainServer 当前在线且可通讯的其他 agent："]
+    for detail in details:
+        name = str(detail.get("agent_name") or "").strip()
+        if not name:
+            continue
+        online_text = "online" if detail.get("online") else "offline"
+        status = str(detail.get("status") or "unknown")
+        phase = str(detail.get("phase") or "").strip()
+        status_text = f"{online_text}, status={status}" + (f", phase={phase}" if phase else "")
+        card = detail.get("card") if isinstance(detail.get("card"), dict) else {}
+        capabilities = card.get("capabilities") if isinstance(card, dict) else []
+        capability_parts: list[str] = []
+        if isinstance(capabilities, list):
+            for capability in capabilities[:4]:
+                if not isinstance(capability, dict):
+                    continue
+                title = str(capability.get("title") or "").strip()
+                content = str(capability.get("content") or "").strip()
+                if title and content:
+                    capability_parts.append(f"{title}: {content}")
+                elif title:
+                    capability_parts.append(title)
+                elif content:
+                    capability_parts.append(content)
+        capability_text = "；".join(capability_parts) if capability_parts else "未提供 AgentCard 能力描述"
+        lines.append(f"- {name} ({status_text})：{capability_text}")
+    lines.append(
+        "如果需要联系这些 agent，必须调用 send_message_to_agent，并把 dst 设置为对应 agent name；"
+        "只在对话里提到它们不会产生通讯。"
+    )
+    return "\n".join(lines)
 
 
 class Middleware(BaseAgentMiddleware):
@@ -118,17 +165,25 @@ class Middleware(BaseAgentMiddleware):
         )
         if self.comm is None or not self.runingConfig.peekPeersInGuidance:
             return guided.override(messages=messages)
+        peer_details: list[dict[str, Any]] | None = None
         try:
-            peers = self.comm.peers()
+            peer_details = self.comm.peer_directory()
+            peers = [
+                str(item.get("agent_name") or "").strip()
+                for item in peer_details
+                if isinstance(item, dict) and str(item.get("agent_name") or "").strip()
+            ]
         except Exception:
-            peers = []
+            try:
+                peers = self.comm.peers()
+            except Exception:
+                peers = []
         if agent_name:
             peers = [peer for peer in peers if str(peer).strip() and peer != agent_name]
-        peers_text = ", ".join(peers) if peers else "未知或空"
         messages = set_named_system_message(
             messages,
             name="middleware.send_messages.peers",
-            text=f"当前可达 peers={peers_text}",
+            text=_format_peer_directory(peers, peer_details),
         )
         return guided.override(messages=messages)
 

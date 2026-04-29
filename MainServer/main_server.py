@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import socket
 import subprocess
@@ -838,9 +839,32 @@ async def agent_peers(agent_name: str) -> dict[str, Any]:
             for registered_name in communication_peer_names
             if registered_name in _registry and registered_name != agent_name
         ]
+    peer_details = []
+    for peer_name in peers:
+        peer_record = _registry.get(peer_name)
+        card: dict[str, Any] | None = None
+        try:
+            raw_card = read_agent_card(peer_name).get("card")
+            if isinstance(raw_card, dict):
+                card = raw_card
+        except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError):
+            card = None
+        peer_details.append(
+            {
+                "agent_name": peer_name,
+                "online": peer_record is not None and peer_record.status not in {"stopped", "error"},
+                "status": peer_record.status if peer_record is not None else "unknown",
+                "phase": peer_record.phase if peer_record is not None else None,
+                "step": peer_record.step if peer_record is not None else None,
+                "service_url": _record_service_url(peer_record) if peer_record is not None else None,
+                "communication_spaces": [space["id"] for space in agent_spaces(peer_name)],
+                "card": card,
+            }
+        )
     return {
         "agent_name": agent_name,
         "peers": peers,
+        "peer_details": peer_details,
         "communication_peers": communication_peer_names,
         "communication_spaces": [space["id"] for space in agent_spaces(agent_name)],
         "scope": record.scope,
@@ -980,8 +1004,21 @@ async def user_chat(payload: UserChatRequest, background_tasks: BackgroundTasks)
         )
 
     chat_config = _agent_chat_config(payload.agent_name)
+    thread_id, run_id = _resolve_chat_identity(
+        chat_config,
+        thread_id=payload.thread_id,
+        session_id=payload.session_id,
+        run_id=payload.run_id,
+    )
+    invoke_request = payload.model_copy(
+        update={
+            "thread_id": thread_id,
+            "session_id": thread_id,
+            "run_id": run_id,
+        }
+    )
     try:
-        invoke_payload = build_invoke_payload(payload, chat_config)
+        invoke_payload = build_invoke_payload(invoke_request, chat_config)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:

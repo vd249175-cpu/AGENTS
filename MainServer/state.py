@@ -21,16 +21,11 @@ class AgentCard(TypedDict):
     capabilities: list[CapabilityCard]
 
 
-class Deliverable(Link):
-    pass
-
-
 class TaskInfo(TypedDict):
     title: str
     goal: str
     description: str
     owner: str
-    deliverables: list[Deliverable]
 
 
 AgentMail = TypedDict(

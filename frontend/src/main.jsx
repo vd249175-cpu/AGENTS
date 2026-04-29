@@ -318,6 +318,21 @@ function eventClock(value) {
   return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function messageTime(value, fallback = 0) {
+  const raw = value?.created_at || value?.createdAt || value?.at || "";
+  const time = raw ? Date.parse(raw) : Number.NaN;
+  return Number.isFinite(time) ? time : fallback;
+}
+
+function sortChronologically(items) {
+  return [...items].sort((left, right) => {
+    const leftTime = Number.isFinite(left.sort_time) ? left.sort_time : messageTime(left, left.sort_order || 0);
+    const rightTime = Number.isFinite(right.sort_time) ? right.sort_time : messageTime(right, right.sort_order || 0);
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    return (left.sort_order || 0) - (right.sort_order || 0);
+  });
+}
+
 function summarizeAgentEvent(eventItem, agentName, index) {
   const eventName = eventItem?.event || eventItem?.type || "event";
   const at = eventItem?.at || eventItem?.finished_at || eventItem?.started_at || "";
@@ -517,6 +532,8 @@ function App() {
   const fileInputRef = useRef(null);
   const mailFileInputRef = useRef(null);
   const loadRequestRef = useRef(0);
+  const selectedAgentRef = useRef("");
+  const chatSessionsRef = useRef({});
 
   const spaces = useMemo(() => normalizeSpaces(communication), [communication]);
   const agentNames = agents.map((agent) => agent.agent_name);
@@ -547,7 +564,7 @@ function App() {
     const seen = new Set();
     return [...eventItems, ...mailItems]
       .sort((left, right) => {
-        if (left.time && right.time && left.time !== right.time) return left.time - right.time;
+        if (left.time !== right.time) return (left.time || 0) - (right.time || 0);
         return left.order - right.order;
       })
       .filter((item) => {
@@ -566,7 +583,11 @@ function App() {
     [selectedAgentActivity],
   );
   const conversationMessages = useMemo(() => {
-    const base = normalizeChatMessages(chatMessages);
+    const base = normalizeChatMessages(chatMessages).map((message, index) => ({
+      ...message,
+      sort_time: messageTime(message, index),
+      sort_order: index,
+    }));
     const seenReplies = new Set(
       base
         .filter((message) => String(message.role || "").replace(/\s+/g, "-") === "agent")
@@ -575,11 +596,13 @@ function App() {
     );
     const activityReplies = selectedAgentActivity
       .filter((item) => item.role === "agent")
-      .map((item) =>
+      .map((item, index) =>
         makeChatMessage("agent", item.content, {
           id: `activity-${item.id}`,
           created_at: item.at || new Date().toISOString(),
           source: "monitor",
+          sort_time: item.time || messageTime(item),
+          sort_order: 10000 + index,
         }),
       )
       .filter((message) => {
@@ -588,8 +611,26 @@ function App() {
         seenReplies.add(content);
         return true;
       });
-    return [...base, ...activityReplies];
+    return sortChronologically([...base, ...activityReplies]);
   }, [chatMessages, selectedAgentActivity]);
+
+  useEffect(() => {
+    selectedAgentRef.current = selectedAgent;
+  }, [selectedAgent]);
+
+  useEffect(() => {
+    chatSessionsRef.current = chatSessions;
+  }, [chatSessions]);
+
+  function sessionFor(agentName, sessions = chatSessionsRef.current) {
+    return sessions?.[agentName] || {};
+  }
+
+  function applySession(agentName, sessions = chatSessionsRef.current) {
+    const session = sessionFor(agentName, sessions);
+    setChatMessages(normalizeChatMessages(session.messages));
+    setLastTraceEvents(session.last_trace_events || session.lastTraceEvents || []);
+  }
 
   async function run(label, operation, onError) {
     setBusy(true);
@@ -614,12 +655,16 @@ function App() {
       setCommunication(result.communication || { spaces: [] });
       setAgentPositions(ui.agent_positions || {});
       latestPositionsRef.current = ui.agent_positions || {};
-      setChatSessions(ui.chat_sessions || {});
+      const nextSessions = ui.chat_sessions || {};
+      setChatSessions(nextSessions);
+      chatSessionsRef.current = nextSessions;
       setOnline(true);
       const nextAgent = selectedAgent || list.find((agent) => agent.agent_name === "SeedAgent")?.agent_name || list[0]?.agent_name || "";
       if (nextAgent) {
+        selectedAgentRef.current = nextAgent;
         setSelectedAgent(nextAgent);
-        await loadAgent(nextAgent, ui.chat_sessions || {});
+        applySession(nextAgent, nextSessions);
+        await loadAgent(nextAgent, nextSessions);
       }
       const nextSpace = selectedSpaceId || result.communication?.spaces?.[0]?.id || "";
       setSelectedSpaceId(nextSpace);
@@ -639,7 +684,7 @@ function App() {
     }
   }
 
-  async function saveUi(nextPositions = agentPositions, nextChatSessions = chatSessions) {
+  async function saveUi(nextPositions = agentPositions, nextChatSessions = chatSessionsRef.current) {
     const result = await api("/admin/ui-state", {
       method: "PUT",
       body: JSON.stringify({
@@ -649,7 +694,9 @@ function App() {
     });
     setAgentPositions(result.ui.agent_positions || {});
     latestPositionsRef.current = result.ui.agent_positions || {};
-    setChatSessions(result.ui.chat_sessions || {});
+    const nextSessions = result.ui.chat_sessions || {};
+    setChatSessions(nextSessions);
+    chatSessionsRef.current = nextSessions;
   }
 
   async function saveCommunication(nextCommunication) {
@@ -686,8 +733,10 @@ function App() {
     setAgentCardJson(pretty(cardResult.status === "fulfilled" ? cardResult.value.card || {} : {}));
     setBrainPrompt(brainResult.status === "fulfilled" ? brainResult.value.content || "" : "");
     const session = sessions?.[agentName] || {};
-    setChatMessages(normalizeChatMessages(session.messages));
-    setLastTraceEvents(session.last_trace_events || session.lastTraceEvents || []);
+    if (selectedAgentRef.current === agentName) {
+      setChatMessages(normalizeChatMessages(session.messages));
+      setLastTraceEvents(session.last_trace_events || session.lastTraceEvents || []);
+    }
   }
 
   useEffect(() => {
@@ -723,13 +772,17 @@ function App() {
   }, [sourceAgent, sourceOptions, selectedAgent]);
 
   function selectAgent(agentName, tab = "chat") {
+    selectedAgentRef.current = agentName;
     setSelectedAgent(agentName);
     setActiveTab(tab);
+    applySession(agentName);
     run(`Loading ${agentName}`, () => loadAgent(agentName));
   }
 
   function selectGraphAgent(agentName) {
+    selectedAgentRef.current = agentName;
     setSelectedAgent(agentName);
+    applySession(agentName);
     loadAgent(agentName).catch((error) => setStatus(`Error: ${error.message}`));
   }
 
@@ -751,8 +804,9 @@ function App() {
         ...agentPositions,
         [name]: { x: 160 + agents.length * 36, y: 140 + agents.length * 28 },
       };
-      await saveUi(nextPositions, chatSessions);
+      await saveUi(nextPositions, chatSessionsRef.current);
       setNewAgentName("");
+      selectedAgentRef.current = name;
       setSelectedAgent(name);
       await refreshAgents();
     });
@@ -763,8 +817,10 @@ function App() {
     if (!window.confirm(`删除 ${selectedAgent} 的本地 Agent 目录？这个操作不能撤销。`)) return;
     run(`Deleting ${selectedAgent}`, async () => {
       await api(`/admin/agents/${selectedAgent}`, { method: "DELETE" });
+      selectedAgentRef.current = "";
       setSelectedAgent("");
       setChatMessages([]);
+      setLastTraceEvents([]);
       await refreshAgents();
     });
   }
@@ -817,8 +873,9 @@ function App() {
       if (result.reload?.attempted && !result.reload.ok) {
         throw new Error(`checkpoint 已清理，但 AgentServer 重载失败：${result.reload.detail || result.reload.reason || "unknown error"}`);
       }
-      const nextSessions = { ...chatSessions };
+      const nextSessions = { ...(chatSessionsRef.current || {}) };
       delete nextSessions[selectedAgent];
+      chatSessionsRef.current = nextSessions;
       setChatSessions(nextSessions);
       setChatMessages([]);
       setLastTraceEvents([]);
@@ -837,15 +894,21 @@ function App() {
   }
 
   function persistChatMessages(agentName, nextMessages, traceEvents = lastTraceEvents) {
+    const currentSessions = chatSessionsRef.current || {};
     const nextSessions = {
-      ...chatSessions,
+      ...currentSessions,
       [agentName]: {
-        ...(chatSessions[agentName] || {}),
+        ...(currentSessions[agentName] || {}),
         messages: nextMessages,
         last_trace_events: traceEvents,
       },
     };
+    chatSessionsRef.current = nextSessions;
     setChatSessions(nextSessions);
+    if (selectedAgentRef.current === agentName) {
+      setChatMessages(normalizeChatMessages(nextMessages));
+      setLastTraceEvents(traceEvents || []);
+    }
     saveUi(agentPositions, nextSessions).catch(() => {});
   }
 
@@ -865,13 +928,15 @@ function App() {
   }
 
   function newThread() {
+    if (!selectedAgent) return;
+    const agentName = selectedAgent;
     const next = `thread-${shortId()}`;
     setThreadId(next);
     setChatMessages([]);
     setLastTraceEvents([]);
-    persistChatMessages(selectedAgent, [], []);
+    persistChatMessages(agentName, [], []);
     run("Saving new thread", async () => {
-      await api(`/user/chat/config/${selectedAgent}`, {
+      await api(`/user/chat/config/${agentName}`, {
         method: "PUT",
         body: JSON.stringify({
           thread_id: next,
@@ -972,6 +1037,11 @@ function App() {
   function sendChat(event) {
     event.preventDefault();
     if (!selectedAgent) return;
+    const agentName = selectedAgent;
+    const serviceReady = selectedServiceReady;
+    const requestThreadId = threadId;
+    const requestRunId = runId;
+    const requestStreamMode = streamMode;
     const text = chatText.trim();
     const attachment = attachmentUrl.trim();
     const files = composerFiles;
@@ -979,25 +1049,25 @@ function App() {
     const userMessage = makeChatMessage("user", userMessagePreview(text, attachment, files), {
       attachments: files,
     });
-    const optimistic = [...chatMessages, userMessage];
-    setChatMessages(optimistic);
-    persistChatMessages(selectedAgent, optimistic);
+    const baseMessages = normalizeChatMessages(sessionFor(agentName).messages);
+    const optimistic = [...baseMessages, userMessage];
+    persistChatMessages(agentName, optimistic);
     setChatText("");
     setAttachmentUrl("");
     setComposerFiles([]);
 
     run("Sending message", async () => {
-      if (!selectedServiceReady) {
+      if (!serviceReady) {
         throw new Error("当前 AgentServer 还没启动注册。请先点右上角“启动服务”，或改用“发邮件”。");
       }
       const body = {
-        agent_name: selectedAgent,
+        agent_name: agentName,
         mode: "direct",
         from: "user",
         text: text || null,
-        thread_id: threadId,
-        run_id: runId || null,
-        stream_mode: parseJson(streamMode, "stream_mode"),
+        thread_id: requestThreadId,
+        run_id: requestRunId || null,
+        stream_mode: parseJson(requestStreamMode, "stream_mode"),
       };
       const fileAttachments = files.map(filePayload);
       const fileParts = files.flatMap((file) => file.parts || []);
@@ -1014,31 +1084,23 @@ function App() {
         body: JSON.stringify(body),
       });
       const traceEvents = buildTraceEvents(result);
-      setLastTraceEvents(traceEvents);
       const reply = result.response?.reply || extractLastContent(result.response || result);
       const nextMessages = [...optimistic, makeChatMessage("agent", reply, { events: traceEvents })];
-      setChatMessages(nextMessages);
-      const nextSessions = {
-        ...chatSessions,
-        [selectedAgent]: {
-          ...(chatSessions[selectedAgent] || {}),
-          messages: nextMessages,
-          last_trace_events: traceEvents,
-        },
-      };
-      setChatSessions(nextSessions);
-      saveUi(agentPositions, nextSessions).catch(() => {});
+      persistChatMessages(agentName, nextMessages, traceEvents);
       await refreshMonitor();
     }, (error) => {
       const nextMessages = [...optimistic, makeChatMessage("agent error", error.message)];
-      setChatMessages(nextMessages);
-      persistChatMessages(selectedAgent, nextMessages);
+      persistChatMessages(agentName, nextMessages);
     });
   }
 
   function sendMail(event) {
     event.preventDefault();
     if (!selectedAgent) return;
+    const agentName = selectedAgent;
+    const requestThreadId = threadId;
+    const requestRunId = runId;
+    const requestStreamMode = streamMode;
     const text = mailText.trim();
     const attachment = mailAttachmentUrl.trim();
     const files = mailFiles;
@@ -1051,14 +1113,14 @@ function App() {
       const result = await api("/user/chat", {
         method: "POST",
         body: JSON.stringify({
-          agent_name: selectedAgent,
+          agent_name: agentName,
           mode: "mail",
           from: "user",
           text: text || null,
           attachments,
-          thread_id: threadId,
-          run_id: runId || null,
-          stream_mode: parseJson(streamMode, "stream_mode"),
+          thread_id: requestThreadId,
+          run_id: requestRunId || null,
+          stream_mode: parseJson(requestStreamMode, "stream_mode"),
         }),
       });
       setMailText("");
@@ -1267,7 +1329,7 @@ function App() {
   function finishDrag() {
     if (!dragging) return;
     setDragging(null);
-    saveUi(latestPositionsRef.current, chatSessions).catch(() => {});
+    saveUi(latestPositionsRef.current, chatSessionsRef.current).catch(() => {});
   }
 
   return (

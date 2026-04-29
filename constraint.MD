@@ -140,10 +140,9 @@ MainServer/
 MessageType = Literal["task", "message"]
 
 Link              # {"link", "summary"}
-Deliverable       # Link 的兼容别名/子类
 CapabilityCard    # {"title", "content"}
 AgentCard         # {"agent_name", "capabilities"}
-TaskInfo          # {"title", "goal", "description", "owner", "deliverables"}
+TaskInfo          # {"title", "goal", "description", "owner"}
 AgentMail         # {"message_id", "from", "to", "type", "content", "attachments"}
 AgentMessage      # AgentMail 的兼容别名
 AgentMessageBox   # {"inbox", "outbox"}，内部保存 AgentMail
@@ -181,7 +180,9 @@ CollaborationState       # {"agentcard", "agent_messages"}
 - 默认超时不超过 5 秒。
 - `AgentComm` 初始化和收发目标只使用 agent name。
 - `send_message_to_agent` 同时负责发送普通信息和任务信息：`msgType="message"` 发送文本，`msgType="task"` 发送 `TaskInfo`。
-- 附件通过 `attachments: list[Link]` 发送。工具入口中，本地文件路径必须以 `/workspace` 开头，工具会转换为当前 Agent workspace 下的宿主机路径；网络 URL 可直接传。
+- 附件统一通过 `AgentMail.attachments: list[Link]` 发送；`TaskInfo` 不再包含
+  `deliverables` 等第二套文件字段。工具入口中，本地文件路径必须以 `/workspace` 开头，
+  工具会转换为当前 Agent workspace 下的宿主机路径；网络 URL 可直接传。
 - 接收方 workspace 相对位置固定为 `Deepagents/<agent_name>/workspace`，MainServer 不依赖注册 payload 中的 workspace 字段。
 - 面向前端或外部调用的用户聊天入口统一使用 `POST /user/chat`：
   - `mode="direct"` 时，MainServer 根据注册 metadata 中的 `service_url` 把归一化后的

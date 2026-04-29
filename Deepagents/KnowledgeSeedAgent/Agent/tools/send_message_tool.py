@@ -58,8 +58,17 @@ ToolStateTydict = SubState
 
 
 class ToolLinkSc(BaseModel):
-    link: str = Field(description="Network URL or a sandbox file path starting with /workspace.")
-    summary: str = Field(default="", description="Short description of this attachment.")
+    link: str = Field(
+        description=(
+            "Attachment URL or sandbox file path. For a local file produced, read, or referenced by this agent, "
+            "pass its /workspace/... path here. The receiver only gets local files listed in attachments; "
+            "a /workspace/... path mentioned only in content is plain text and will not copy the file."
+        )
+    )
+    summary: str = Field(
+        default="",
+        description="Short human-readable description of this attachment, for example 'draft report to review'.",
+    )
 
 
 class ToolTaskInfoSc(BaseModel):
@@ -67,20 +76,29 @@ class ToolTaskInfoSc(BaseModel):
     goal: str = Field(description="Task goal.")
     description: str = Field(description="Task details.")
     owner: str | None = Field(default=None, description="Target agent name. Defaults to dst.")
-    deliverables: list[ToolLinkSc] = Field(default_factory=list)
 
 
 class ToolInputSm(BaseModel):
     content: str | None = Field(
         default=None,
-        description="Message body. For msgType=task this can be used to auto-build taskInfo.",
+        description=(
+            "Message body. For msgType=task this can be used to auto-build taskInfo. "
+            "Do not rely on content to transfer a file; if the receiver should inspect a document, image, "
+            "or generated artifact, also include that file in attachments."
+        ),
     )
     dst: str | None = Field(default=None, description="Target agent name. Empty value uses the default target.")
     msgType: MessageType = Field(default="message", description="Message type.")
     taskInfo: ToolTaskInfoSc | None = Field(default=None, description="Structured task content when msgType=task.")
     attachments: list[ToolLinkSc] = Field(
         default_factory=list,
-        description="Files or links to send. Use /workspace/... for local sandbox files, unless the value is a network URL.",
+        description=(
+            "Files or links to physically send with this mail. Use this whenever the receiver must read, review, "
+            "check, compare, ingest, or continue work from a document/file/image/artifact. Local files must use "
+            "/workspace/... paths, for example attachments=[{'link':'/workspace/notes/report.md','summary':'report to review'}]. "
+            "Network URLs may be passed directly. Mentioning a /workspace/... path in content is not enough. "
+            "This same attachments field is used for both msgType='message' and msgType='task'."
+        ),
     )
 
 
@@ -89,8 +107,12 @@ class ToolDescriptionSc(BaseModel):
     toolDescription: str = Field(
         default=(
             "Send an AgentMail as either a normal message or a task. Use msgType='message' for plain text "
-            "and msgType='task' for taskInfo. Attachments must be network URLs or sandbox paths starting "
-            "with /workspace; local files outside /workspace are not accepted."
+            "and msgType='task' for taskInfo. If the receiver needs to inspect or use any local document, "
+            "file, image, or generated artifact, put it in attachments; do not only mention the path in content. "
+            "File transfer always uses the top-level attachments field for both message and task mails; "
+            "taskInfo only describes the task and has no file-transfer field. "
+            "Attachments must be network URLs or sandbox paths starting with /workspace; local files outside "
+            "/workspace are not accepted."
         )
     )
 
@@ -188,7 +210,7 @@ def _task_payload(
     if task_info is not None:
         payload = task_info.model_dump() if isinstance(task_info, BaseModel) else dict(task_info)
         payload["owner"] = str(payload.get("owner") or owner)
-        payload["deliverables"] = _normalize_visible_links(payload.get("deliverables") or [])
+        payload.pop("deliverables", None)
         return payload
     body = str(content or "").strip()
     if not body:
@@ -198,7 +220,6 @@ def _task_payload(
         "goal": body,
         "description": body,
         "owner": owner,
-        "deliverables": [],
     }
 
 

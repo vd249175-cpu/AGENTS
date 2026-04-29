@@ -149,6 +149,45 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["peers"], ["AgentB", "AgentC"])
 
+    def test_peers_endpoint_includes_online_status_and_agent_card(self) -> None:
+        agent_b_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / "AgentB"
+        shutil.rmtree(agent_b_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, agent_b_root, True)
+        card_path = agent_b_root / "AgentServer" / "AgentCard.json"
+        card_path.parent.mkdir(parents=True, exist_ok=True)
+        card_path.write_text(
+            json.dumps(
+                {
+                    "agent_name": "AgentB",
+                    "capabilities": [{"title": "Search", "content": "Find useful information."}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.client.put(
+            "/admin/communication",
+            json={"spaces": [{"id": "main", "members": ["AgentA", "AgentB"]}]},
+        )
+        self.client.post("/agents/register", json={"agent_name": "AgentA"})
+        self.client.post(
+            "/agents/register",
+            json={
+                "agent_name": "AgentB",
+                "metadata": {"service_url": "http://127.0.0.1:8011"},
+            },
+        )
+        self.client.post("/agents/AgentB/status", json={"status": "running", "phase": "ready"})
+
+        response = self.client.get("/agents/peers/AgentA")
+
+        self.assertEqual(response.status_code, 200)
+        detail = response.json()["peer_details"][0]
+        self.assertEqual(detail["agent_name"], "AgentB")
+        self.assertTrue(detail["online"])
+        self.assertEqual(detail["status"], "running")
+        self.assertEqual(detail["service_url"], "http://127.0.0.1:8011")
+        self.assertEqual(detail["card"]["capabilities"][0]["title"], "Search")
+
     def test_user_chat_mail_builds_agent_mail(self) -> None:
         self.client.put(
             "/user/chat/config/SeedAgent",
@@ -336,6 +375,46 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.assertEqual(invoke_payload["run_id"], "frontend-run")
         self.assertEqual(invoke_payload["stream_mode"], ["updates", "custom"])
         self.assertEqual(response.json()["chat"]["thread_id"], "frontend-thread")
+
+    def test_user_chat_direct_uses_effective_default_run_id(self) -> None:
+        calls = []
+
+        def fake_post_json(url, payload, timeout):
+            calls.append({"url": url, "payload": payload, "timeout": timeout})
+            return {"ok": True, "chunks": []}
+
+        original_post_json = self.main_server.post_json
+        self.main_server.post_json = fake_post_json
+        self.addCleanup(setattr, self.main_server, "post_json", original_post_json)
+
+        self.client.post(
+            "/agents/register",
+            json={
+                "agent_name": "SeedAgent",
+                "metadata": {"service_url": "http://127.0.0.1:8010"},
+            },
+        )
+        response = self.client.put(
+            "/user/chat/config/SeedAgent",
+            json={
+                "thread_id": "frontend-thread",
+                "run_id": None,
+                "stream_mode": ["updates", "custom"],
+                "version": "v2",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.post(
+            "/user/chat",
+            json={"agent_name": "SeedAgent", "mode": "direct", "text": "hello"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        invoke_payload = calls[0]["payload"]
+        self.assertEqual(invoke_payload["session_id"], "frontend-thread")
+        self.assertEqual(invoke_payload["run_id"], "frontend-thread-run")
+        self.assertEqual(response.json()["chat"]["run_id"], "frontend-thread-run")
 
     def test_admin_clear_runtime_removes_store_and_mail_but_keeps_knowledge_by_default(self) -> None:
         agent_name = "RuntimeCleanupAgent"

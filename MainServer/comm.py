@@ -62,4 +62,17 @@ class AgentComm:
 
     def peers(self) -> list[str]:
         result = _get(f"{self.base_url}/agents/peers/{self.agent_name}", timeout=self.timeout)
-        return result.get("peers", [])
+        return result.get("peers", []) if isinstance(result, dict) else []
+
+    def peer_directory(self) -> list[dict[str, Any]]:
+        result = _get(f"{self.base_url}/agents/peers/{self.agent_name}", timeout=self.timeout)
+        if not isinstance(result, dict):
+            return []
+        peer_details = result.get("peer_details")
+        if isinstance(peer_details, list):
+            return [item for item in peer_details if isinstance(item, dict)]
+        return [
+            {"agent_name": peer, "online": True}
+            for peer in result.get("peers", [])
+            if isinstance(peer, str) and peer.strip()
+        ]
