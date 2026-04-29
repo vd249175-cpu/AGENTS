@@ -727,6 +727,45 @@ class MainServerAdminConfigTests(unittest.TestCase):
         self.assertFalse(names["SeedAgent"]["registered"])
         self.assertEqual(names["SeedAgent"]["status"], "available")
 
+    def test_create_agent_does_not_copy_workspace_business_files(self) -> None:
+        source_name = "CopySourceAgent"
+        target_name = "CopyTargetAgent"
+        source_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / source_name
+        target_root = Path(self.main_server.PROJECT_ROOT) / "Deepagents" / target_name
+        shutil.rmtree(source_root, ignore_errors=True)
+        shutil.rmtree(target_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, source_root, True)
+        self.addCleanup(shutil.rmtree, target_root, True)
+
+        (source_root / "Agent").mkdir(parents=True)
+        (source_root / "AgentServer").mkdir(parents=True)
+        (source_root / "workspace" / "brain").mkdir(parents=True)
+        (source_root / "workspace" / "skills" / "custom-skill").mkdir(parents=True)
+        (source_root / "workspace" / "notes").mkdir(parents=True)
+        (source_root / "workspace" / "knowledge").mkdir(parents=True)
+        (source_root / "workspace" / "brain" / "AGENTS.md").write_text("CopySourceAgent brain", encoding="utf-8")
+        (source_root / "workspace" / "brain" / "scratch.txt").write_text("do not copy", encoding="utf-8")
+        (source_root / "workspace" / "skills" / "custom-skill" / "SKILL.md").write_text("skill", encoding="utf-8")
+        (source_root / "workspace" / "business.txt").write_text("do not copy", encoding="utf-8")
+        (source_root / "workspace" / "notes" / "note.md").write_text("do not copy", encoding="utf-8")
+        (source_root / "workspace" / "knowledge" / "doc.txt").write_text("do not copy", encoding="utf-8")
+
+        response = self.client.post(
+            "/admin/agents/create",
+            json={"agent_name": target_name, "source_agent": source_name},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue((target_root / "workspace" / "brain" / "AGENTS.md").exists())
+        self.assertIn(target_name, (target_root / "workspace" / "brain" / "AGENTS.md").read_text(encoding="utf-8"))
+        self.assertTrue((target_root / "workspace" / "skills" / "custom-skill" / "SKILL.md").exists())
+        self.assertFalse((target_root / "workspace" / "brain" / "scratch.txt").exists())
+        self.assertFalse((target_root / "workspace" / "business.txt").exists())
+        self.assertFalse((target_root / "workspace" / "notes" / "note.md").exists())
+        self.assertFalse((target_root / "workspace" / "knowledge" / "doc.txt").exists())
+        self.assertTrue((target_root / "workspace" / "notes").is_dir())
+        self.assertTrue((target_root / "workspace" / "knowledge").is_dir())
+
 
 if __name__ == "__main__":
     unittest.main()

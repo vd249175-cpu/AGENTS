@@ -12,8 +12,8 @@
   收拢成 `Config / SubState / Schema / helper / wrapper / default entry`
   的单文件形态；共享的 demo 级 helper 现在放在 `Agent/server/demo_server.py`。
 
-当前有两套知识型 seed 模板：
-- `SeedAgent`：已由 `KnowledgeSeedAgent` 模板重建，默认挂文档切分入库和知识管理工具。
+当前有两套基础 seed 模板：
+- `SeedAgent`：普通基础 agent，默认不挂文档切分入库、chunkApply 或知识管理工具。
 - `KnowledgeSeedAgent`：知识库模板，接入复制到本项目的 `memory/` 包；
   `ingest_knowledge_document` 负责把 `workspace/knowledge` 中的长文档切分进入
   记忆图，`manage_knowledge` 负责查询、整理、修正和关联记忆内容。
@@ -108,8 +108,10 @@ LANGVIDEO/
   - 后端管理接口支持读取/修改中心配置、读取/修改单个 agent scope、读取/修改
     给其他 agent 看的 `AgentServer/AgentCard.json`，以及真正进入当前 agent 上下文的
     `workspace/brain/AGENTS.md`，并从任意已有 Agent 目录复制创建新 agent 目录；
-    `SeedAgent` 与 `KnowledgeSeedAgent` 当前都是知识型模板。
-  - 复制新 agent 时不复制 `Agent/store`、mail、pycache 等运行态内容；也可通过
+    `SeedAgent` 是普通基础模板，`KnowledgeSeedAgent` 是带 chunkApply/知识管理工具的知识模板。
+  - 复制新 agent 时不复制 `Agent/store`、mail、pycache，以及 `workspace` 中的业务文件、
+    notes 和 knowledge 内容；只保留 `workspace/brain/AGENTS.md` 与 `workspace/skills/**`。
+    也可通过
     `POST /admin/agents/{agent_name}/runtime/clear` 手动清理本地缓存和临时数据库。
 - `frontend/`
   - React + Vite 管理台，默认通过 `/api` proxy 连接本地 MainServer。
@@ -129,7 +131,7 @@ LANGVIDEO/
   - 只是 discovery stub，真正的浏览器流程由 `agent-browser skills get core` 提供。
 - `memory/`
   - 复制进当前项目的记忆管理包。
-  - 当前通过知识型 seed agents 的 bridge 使用公开入口 `ChunkApplyTool` 和
+  - 当前通过 `KnowledgeSeedAgent` 的 bridge 使用公开入口 `ChunkApplyTool` 和
     `KnowledgeManagerCapabilityMiddleware`。
 
 ## Tool / Middleware 约束

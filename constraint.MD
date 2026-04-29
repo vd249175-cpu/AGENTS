@@ -10,9 +10,9 @@
 当前不直接迁移旧项目中的 `MemoryManage/*`、RAG、索引构建、记忆召回等历史实现。
 记忆能力通过复制到当前项目的 `memory/` 包接入，优先使用它的 demo 风格公开入口：
 `ChunkApplyTool` 和 `KnowledgeManagerCapabilityMiddleware`。
-当前保留两套知识型 seed：`SeedAgent` 已由 `KnowledgeSeedAgent` 模板重建，
-默认挂 `ingest_knowledge_document` 和 `manage_knowledge`；`KnowledgeSeedAgent`
-保留为知识库模板源。主 agent 仍可接入 deepagents 自带的 `MemoryMiddleware`
+当前保留两套 seed：`SeedAgent` 是普通基础 agent，默认不挂文档切分入库、
+chunkApply 或知识管理工具；`KnowledgeSeedAgent` 是知识库模板，默认挂
+`ingest_knowledge_document` 和 `manage_knowledge`。主 agent 仍可接入 deepagents 自带的 `MemoryMiddleware`
 与 `SkillsMiddleware`，分别读取 `workspace/brain/AGENTS.md` 和
 `workspace/skills/*/SKILL.md`。
 
@@ -209,9 +209,9 @@ CollaborationState       # {"agentcard", "agent_messages"}
   `checkpointPath` 覆盖。清理 checkpoint 后必须重载运行中的 AgentServer，
   让主 agent 关闭旧 sqlite 连接并重新接到新文件。
 - 浏览器自动化是 agent 侧能力，不是 Codex 自身能力；它通过 `workspace/skills/agent-browser/SKILL.md` 接入，Docker sandbox 提供 `agent-browser` + `/usr/bin/chromium`，真实流程由 CLI 的 `skills get core` 提供。
-- SeedAgent 与 KnowledgeSeedAgent 记忆能力通过 `memory/` 包接入：`ingest_knowledge_document`
-  将 `/workspace/knowledge/...` 文件切分写入记忆图，`manage_knowledge` 管理、
-  查询、修正和关联记忆内容。
+- KnowledgeSeedAgent 记忆能力通过 `memory/` 包接入：`ingest_knowledge_document`
+  将 `/workspace/knowledge/...` 文件通过 chunkApply 切分写入记忆图，`manage_knowledge`
+  管理、查询、修正和关联记忆内容。SeedAgent 默认不挂这些记忆工具。
 
 ### 5.3 注册链路
 
@@ -445,6 +445,10 @@ Agent runtime 完整配置放在 `Deepagents/*/Agent/<XxxAgent>Config.local.json
 ## 10. workspace 边界约束
 
 `workspace/` 是 Agent 的本地工作目录，不是框架说明存放地。
+
+复制新 Agent 时，`workspace` 中的业务文件不得随模板一起复制；只保留
+`workspace/brain/AGENTS.md` 和 `workspace/skills/**`，并在目标中创建空的
+`workspace/notes` 与 `workspace/knowledge` 目录。
 
 每个 Agent 的 sandbox 必须按 `agent_name` 隔离：
 - 容器名包含 agent name 和 workspace 路径 hash。

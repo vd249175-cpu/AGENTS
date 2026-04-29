@@ -179,6 +179,23 @@ def _snake_name(value: str) -> str:
 
 def _copy_ignore(_directory: str, names: list[str]) -> set[str]:
     ignored: set[str] = set()
+    directory = str(Path(_directory))
+    parts = Path(directory).parts
+    if "workspace" in parts:
+        workspace_index = len(parts) - 1 - list(reversed(parts)).index("workspace")
+        workspace_relative = parts[workspace_index + 1 :]
+        if not workspace_relative:
+            allowed = {"brain", "skills"}
+            for name in names:
+                if name not in allowed:
+                    ignored.add(name)
+        elif workspace_relative == ("brain",):
+            for name in names:
+                if name != "AGENTS.md":
+                    ignored.add(name)
+        elif workspace_relative[0] != "skills":
+            ignored.update(names)
+
     for name in names:
         if name in RUNTIME_FILE_NAMES or name in RUNTIME_DIR_NAMES:
             ignored.add(name)
